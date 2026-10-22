@@ -33,6 +33,7 @@ from peakwindow.evaluation import (
 )
 from peakwindow.models import SPECS, RidgeForecaster
 from peakwindow.splits import Period
+from peakwindow.uncertainty import LEVELS, ConformalIntervals, CoverageMetrics, coverage_metrics
 
 ALPHAS = (0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)
 RIDGE = "ridge"
@@ -147,5 +148,83 @@ def final_evaluation(series: pd.DataFrame, spec: str, alpha: float) -> FinalResu
         holdout=holdout,
         sensitivity_window=score_models(frame.loc[inside], models),
         outside_window=score_models(frame.loc[~inside], models),
+        model_export=ridge.export(),
+    )
+
+
+@dataclass(frozen=True)
+class IntervalResult:
+    spec: str
+    alpha: float
+    intervals: ConformalIntervals
+    calibration_origins: int
+    holdout_origins: int
+    holdout: dict[float, CoverageMetrics]
+    sensitivity_window: dict[float, CoverageMetrics]
+    outside_window: dict[float, CoverageMetrics]
+    model_export: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        def by_level(metrics: dict[float, CoverageMetrics]) -> dict[str, Any]:
+            return {f"{level:.2f}": item.to_dict() for level, item in metrics.items()}
+
+        first, last = SENSITIVITY_WINDOW
+        return {
+            "protocol": "per-horizon split conformal; residuals of the train+validation "
+            "Ridge on the calibration period; coverage measured once on the holdout",
+            "chosen": {"spec": self.spec, "alpha": self.alpha},
+            "levels": list(self.intervals.half_widths),
+            "calibration_origins": self.calibration_origins,
+            "calibration_rows_per_horizon": list(self.intervals.calibration_rows_per_horizon),
+            "half_widths_mw": {
+                f"{level:.2f}": list(widths) for level, widths in self.intervals.half_widths.items()
+            },
+            "holdout_origins": self.holdout_origins,
+            "holdout": by_level(self.holdout),
+            "sensitivity": {
+                "window_origins": [first, last],
+                "inside_window": by_level(self.sensitivity_window),
+                "outside_window": by_level(self.outside_window),
+            },
+        }
+
+
+def interval_evaluation(
+    series: pd.DataFrame, spec: str, alpha: float, levels: tuple[float, ...] = LEVELS
+) -> IntervalResult:
+    """Calibrate intervals on the calibration period and measure coverage on the holdout."""
+    fit_data = build_dataset(series, (Period.TRAIN, Period.VALIDATION))
+    ridge = _fit(fit_data.frame, spec, alpha)
+
+    calibration = build_dataset(series, (Period.CALIBRATION,)).frame
+    intervals = ConformalIntervals.calibrate(
+        calibration["horizon_h"].to_numpy(),
+        calibration[ACTUAL].to_numpy(),
+        ridge.predict(calibration),
+        levels,
+    )
+
+    holdout = build_dataset(series, (Period.HOLDOUT,), allow_holdout=True).frame
+    first, last = (pd.Timestamp(day, tz="UTC") for day in SENSITIVITY_WINDOW)
+    inside = holdout["origin_utc"].between(first, last)
+
+    def measure(rows: pd.Series) -> dict[float, CoverageMetrics]:
+        part = holdout.loc[rows]
+        predicted = ridge.predict(part)
+        actual = part[ACTUAL].to_numpy()
+        return {
+            level: coverage_metrics(part, actual, predicted, intervals, level) for level in levels
+        }
+
+    everything = pd.Series(True, index=holdout.index)
+    return IntervalResult(
+        spec=spec,
+        alpha=alpha,
+        intervals=intervals,
+        calibration_origins=int(calibration["origin_utc"].nunique()),
+        holdout_origins=int(holdout["origin_utc"].nunique()),
+        holdout=measure(everything),
+        sensitivity_window=measure(inside),
+        outside_window=measure(~inside),
         model_export=ridge.export(),
     )

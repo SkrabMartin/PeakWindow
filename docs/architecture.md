@@ -17,7 +17,9 @@ cli.py
  │                              ├─► splits.py      frozen origins, holdout lock
  │                              ├─► features.py ─► contracts.select_history, holidays.py
  │                              └─► baselines.py
- └─ select-model / evaluate-holdout ─► study.py ─► evaluation.py, models.py (Ridge)
+ ├─ select-model / evaluate-holdout ─► study.py ─► evaluation.py, models.py (Ridge)
+ ├─ backtest ─────────► backtest.py ─► evaluation.py, models.py
+ └─ evaluate-intervals ─► study.py ─► uncertainty.py (split conformal)
 
 tests/ ── call every module directly; test_cli.py and test_prepare.py also drive main().
           No test uses the network: downloads are tested with file:// URLs.
@@ -51,7 +53,12 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
   export of its scaler and coefficients.
 - **`study.py`**: `select_model()` (fit on train, choose by validation MAE) and
   `final_evaluation()` (refit on train + validation, score the holdout once, plus the
-  pre-declared sensitivity view).
+  pre-declared sensitivity view), and `interval_evaluation()` (calibrate on the
+  calibration period, measure coverage on the holdout).
+- **`backtest.py`**: `rolling_backtest()`, an expanding window with yearly refits
+  over 2016–2019. It never builds holdout origins.
+- **`uncertainty.py`**: `conformal_quantile()`, `ConformalIntervals` (per-horizon
+  half-widths) and `coverage_metrics()`. All of it is pure.
 - **`evaluation.py`**: `build_dataset()` and `evaluate()`. They score every model on
   the same origins, record data-gap exceptions, compute metrics and enforce the
   holdout lock. Each origin's features are built from a window that ends at the origin.
@@ -77,5 +84,5 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
 
 ## Planned growth (not implemented)
 
-Later phases will add uncertainty, backtesting, reporting and a dashboard. They will reuse `features.py`, `splits.py` and `evaluation.py` rather than
+Later phases will add reporting and a dashboard. They will reuse `features.py`, `splits.py` and `evaluation.py` rather than
 redefine them. See [roadmap.md](roadmap.md).

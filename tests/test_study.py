@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from peakwindow import cli
+from peakwindow.backtest import BACKTEST_YEARS, BacktestResult, rolling_backtest
 from peakwindow.cli import EXIT_OK, EXIT_USAGE_OR_IO_ERROR, main
 from peakwindow.contracts import LOAD_COLUMN, TIMESTAMP_COLUMN, ForecastRequest
 from peakwindow.features import MAX_LOOKBACK, build_features
@@ -17,8 +18,10 @@ from peakwindow.study import (
     ALPHAS,
     SPECS,
     FinalResult,
+    IntervalResult,
     SelectionResult,
     final_evaluation,
+    interval_evaluation,
     select_model,
 )
 
@@ -50,6 +53,16 @@ def selection(series: pd.DataFrame) -> SelectionResult:
 @pytest.fixture(scope="module")
 def final(series: pd.DataFrame, selection: SelectionResult) -> FinalResult:
     return final_evaluation(series, selection.chosen.spec, selection.chosen.alpha)
+
+
+@pytest.fixture(scope="module")
+def backtest(series: pd.DataFrame, selection: SelectionResult) -> BacktestResult:
+    return rolling_backtest(series, selection.chosen.spec, selection.chosen.alpha)
+
+
+@pytest.fixture(scope="module")
+def intervals(series: pd.DataFrame, selection: SelectionResult) -> IntervalResult:
+    return interval_evaluation(series, selection.chosen.spec, selection.chosen.alpha)
 
 
 def test_selection_fits_every_candidate_and_picks_lowest_validation_mae(
@@ -165,3 +178,87 @@ def test_cli_refuses_selection_made_on_other_data(
     args = ["evaluate-holdout", "--data-dir", str(data), "--output-dir", str(experiments)]
     assert main([*args, "--confirm"]) == EXIT_USAGE_OR_IO_ERROR
     assert "different data" in capsys.readouterr().err
+
+
+# --- Phase 4: backtest and intervals ----------------------------------------
+
+
+def test_backtest_folds_fit_only_on_the_past(backtest: BacktestResult) -> None:
+    assert [fold.test_year for fold in backtest.folds] == list(BACKTEST_YEARS)
+    fit_sizes = [fold.fit_origins for fold in backtest.folds]
+    assert fit_sizes == sorted(fit_sizes)  # expanding window
+    for fold in backtest.folds:
+        assert fold.fit_last_origin_utc < f"{fold.test_year}-01-01"
+        assert fold.fit_first_origin_utc == "2015-01-09T00:00:00Z"
+        assert set(fold.models) == {"seasonal_naive_daily", "seasonal_naive_weekly", "ridge"}
+
+
+def test_backtest_never_reads_the_holdout(
+    series: pd.DataFrame, selection: SelectionResult, backtest: BacktestResult
+) -> None:
+    damaged = series.copy()
+    holdout = damaged[TIMESTAMP_COLUMN] >= pd.Timestamp("2020-01-01T00:00:00Z")
+    damaged.loc[holdout, LOAD_COLUMN] = -1.0e6
+
+    again = rolling_backtest(damaged, selection.chosen.spec, selection.chosen.alpha)
+
+    assert again == backtest
+
+
+def test_intervals_use_the_final_model_and_calibration_period(
+    intervals: IntervalResult, final: FinalResult
+) -> None:
+    # Same deterministic refit as the final point evaluation.
+    assert intervals.model_export == final.model_export
+    assert intervals.calibration_origins == 184
+    assert intervals.intervals.calibration_rows_per_horizon == (184,) * 24
+    assert intervals.holdout_origins == 273
+    widths_80 = intervals.intervals.half_widths[0.8]
+    widths_90 = intervals.intervals.half_widths[0.9]
+    assert all(w90 >= w80 > 0 for w80, w90 in zip(widths_80, widths_90, strict=True))
+    for level, metrics in intervals.holdout.items():
+        assert 0 <= metrics.coverage <= 1
+        assert metrics.level == level
+    record = intervals.to_dict()
+    assert set(record["holdout"]) == {"0.80", "0.90"}
+    assert len(record["half_widths_mw"]["0.90"]) == 24
+
+
+def test_cli_backtest_and_intervals(
+    series: pd.DataFrame,
+    selection: SelectionResult,
+    backtest: BacktestResult,
+    intervals: IntervalResult,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "select_model", lambda _: selection)
+    monkeypatch.setattr(cli, "rolling_backtest", lambda *_: backtest)
+    monkeypatch.setattr(cli, "interval_evaluation", lambda *_: intervals)
+    data = tmp_path / "data"
+    write_processed(series, data / "processed")
+    experiments = tmp_path / "exp"
+    common = ["--data-dir", str(data), "--output-dir", str(experiments)]
+
+    assert main(["backtest", *common]) == EXIT_USAGE_OR_IO_ERROR
+    assert "run select-model first" in capsys.readouterr().err
+    assert main(["select-model", *common]) == EXIT_OK
+    assert main(["backtest", *common]) == EXIT_OK
+    assert "2019 (fit on" in capsys.readouterr().err
+
+    assert main(["evaluate-intervals", *common]) == EXIT_USAGE_OR_IO_ERROR
+    assert "--confirm" in capsys.readouterr().err
+    assert main(["evaluate-intervals", *common, "--confirm"]) == EXIT_OK
+    assert "90% interval: coverage" in capsys.readouterr().err
+    record = json.loads((experiments / "intervals_holdout.json").read_text(encoding="utf-8"))
+    assert record["model_matches_final_holdout_model"] is False  # no final model stored
+
+    # A stored final model that differs from the refit is refused.
+    (experiments / "ridge_final_model.json").write_text('{"alpha": -1}', encoding="utf-8")
+    assert main(["evaluate-intervals", *common, "--confirm"]) == EXIT_USAGE_OR_IO_ERROR
+    assert "differs" in capsys.readouterr().err
+    (experiments / "ridge_final_model.json").write_text(
+        json.dumps(intervals.model_export), encoding="utf-8"
+    )
+    assert main(["evaluate-intervals", *common, "--confirm"]) == EXIT_OK

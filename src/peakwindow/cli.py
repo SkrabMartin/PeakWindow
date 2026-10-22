@@ -4,7 +4,8 @@ Exit status:
 
 * 0 -- success (``validate-data``: every quality check passed;
   ``prepare-opsd``: processed series written; ``evaluate-baselines``,
-  ``select-model``, ``evaluate-holdout``: record written)
+  ``select-model``, ``evaluate-holdout``, ``backtest``, ``evaluate-intervals``:
+  record written)
 * 1 -- the data was read but failed (``validate-data``: a quality check;
   ``prepare-opsd``: the series could not be processed or UTC/local alignment failed)
 * 2 -- usage error, network/download failure, checksum mismatch, a locked holdout,
@@ -20,15 +21,19 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+import pandas as pd
 
 from peakwindow import __version__, baselines, opsd
 from peakwindow.acquisition import AcquisitionError, ProgressCallback, fetch, sha256_of
+from peakwindow.backtest import rolling_backtest
 from peakwindow.csv_adapter import CsvReadError, read_canonical_csv
 from peakwindow.evaluation import HoldoutLockedError, ModelMetrics, evaluate_baselines
 from peakwindow.features import FEATURE_COLUMNS
 from peakwindow.prepare import PreparationError, load_processed, prepare_opsd
 from peakwindow.splits import SPLIT_VERSION, Period
-from peakwindow.study import RIDGE, final_evaluation, select_model
+from peakwindow.study import RIDGE, final_evaluation, interval_evaluation, select_model
 from peakwindow.validation import validate_hourly_frame
 
 EXIT_OK = 0
@@ -42,7 +47,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "PeakWindow: historical Czech electricity-demand forecasting laboratory. "
             "Provides OPSD data acquisition, offline preparation, data-quality audits, "
-            "seasonal naive baselines, Ridge model selection and the final holdout evaluation."
+            "seasonal naive baselines, Ridge model selection, the final holdout evaluation, "
+            "rolling backtests and conformal prediction intervals."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -162,6 +168,40 @@ def _build_parser() -> argparse.ArgumentParser:
         help="confirm that models are frozen and the holdout may be opened",
     )
     holdout_parser.set_defaults(handler=_evaluate_holdout)
+
+    backtest_parser = commands.add_parser(
+        "backtest",
+        help="rolling-origin backtest 2016-2019 with yearly refits (holdout excluded)",
+        description=(
+            "Refit the configuration chosen by select-model on all origins before each test "
+            "year (2016-2019) and score it with both baselines on that year."
+        ),
+    )
+    backtest_parser.add_argument("--data-dir", type=Path, default=Path("data"), help=data_dir_help)
+    backtest_parser.add_argument(
+        "--output-dir", type=Path, default=Path("experiments"), help=experiments_help
+    )
+    backtest_parser.set_defaults(handler=_backtest)
+
+    intervals_parser = commands.add_parser(
+        "evaluate-intervals",
+        help="FINAL: calibrate conformal intervals and measure their coverage on the holdout",
+        description=(
+            "Calibrate per-horizon split-conformal intervals (80 %% and 90 %%) on the "
+            "calibration period for the train + validation Ridge, then measure coverage once "
+            "on the 2020 holdout. Requires --confirm."
+        ),
+    )
+    intervals_parser.add_argument("--data-dir", type=Path, default=Path("data"), help=data_dir_help)
+    intervals_parser.add_argument(
+        "--output-dir", type=Path, default=Path("experiments"), help=experiments_help
+    )
+    intervals_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="confirm that the interval method is fixed and the holdout may be opened",
+    )
+    intervals_parser.set_defaults(handler=_evaluate_intervals)
     return parser
 
 
@@ -299,6 +339,112 @@ def _select_model(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_selection(args: argparse.Namespace) -> tuple[pd.DataFrame, str, dict[str, Any]] | None:
+    """Load the processed series and a model selection made on that same data."""
+    selection_path: Path = args.output_dir / "model_selection.json"
+    try:
+        selection: dict[str, Any] = json.loads(selection_path.read_text(encoding="utf-8"))
+        series, data_sha256 = load_processed(args.data_dir / "processed")
+    except FileNotFoundError:
+        print(
+            f"peakwindow: error: no model selection at {selection_path}; run select-model first",
+            file=sys.stderr,
+        )
+        return None
+    except (OSError, json.JSONDecodeError, PreparationError) as exc:
+        print(f"peakwindow: error: {exc}", file=sys.stderr)
+        return None
+    if selection.get("data", {}).get("processed_sha256") != data_sha256:
+        print(
+            "peakwindow: error: the model selection was made on different data; "
+            "re-run select-model",
+            file=sys.stderr,
+        )
+        return None
+    return series, data_sha256, selection
+
+
+def _backtest(args: argparse.Namespace) -> int:
+    loaded = _load_selection(args)
+    if loaded is None:
+        return EXIT_USAGE_OR_IO_ERROR
+    series, data_sha256, selection = loaded
+    chosen = selection["selection"]["chosen"]
+    result = rolling_backtest(series, chosen["spec"], float(chosen["alpha"]))
+    record: dict[str, object] = {
+        "schema_version": "1",
+        "experiment": "rolling_backtest",
+        "generated_at_utc": _utc_now(),
+        "peakwindow_version": __version__,
+        "split_version": SPLIT_VERSION,
+        "data": {"processed_sha256": data_sha256, "source_doi": opsd.DOI_URL},
+        "seed": None,
+        "result": result.to_dict(),
+    }
+    output_path: Path = args.output_dir / "backtest.json"
+    if not _write_json(output_path, record):
+        return EXIT_USAGE_OR_IO_ERROR
+    print(f"backtest: spec={result.spec} alpha={result.alpha}, yearly refit", file=sys.stderr)
+    for fold in result.folds:
+        print(f" {fold.test_year} (fit on {fold.fit_origins} origins):", file=sys.stderr)
+        _print_metrics(fold.models)
+    print(f"backtest record written to {output_path}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _evaluate_intervals(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print(
+            "peakwindow: error: evaluate-intervals opens the final holdout; re-run with "
+            "--confirm once the interval method is fixed",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_OR_IO_ERROR
+    loaded = _load_selection(args)
+    if loaded is None:
+        return EXIT_USAGE_OR_IO_ERROR
+    series, data_sha256, selection = loaded
+    chosen = selection["selection"]["chosen"]
+    result = interval_evaluation(series, chosen["spec"], float(chosen["alpha"]))
+
+    final_model_path: Path = args.output_dir / "ridge_final_model.json"
+    if final_model_path.is_file():
+        stored = json.loads(final_model_path.read_text(encoding="utf-8"))
+        if stored != json.loads(json.dumps(result.model_export)):
+            print(
+                f"peakwindow: error: the refitted model differs from {final_model_path.name}",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE_OR_IO_ERROR
+    record: dict[str, object] = {
+        "schema_version": "1",
+        "experiment": "intervals_holdout",
+        "generated_at_utc": _utc_now(),
+        "peakwindow_version": __version__,
+        "split_version": SPLIT_VERSION,
+        "data": {"processed_sha256": data_sha256, "source_doi": opsd.DOI_URL},
+        "model_matches_final_holdout_model": final_model_path.is_file(),
+        "seed": None,
+        "result": result.to_dict(),
+    }
+    output_path: Path = args.output_dir / "intervals_holdout.json"
+    if not _write_json(output_path, record):
+        return EXIT_USAGE_OR_IO_ERROR
+    print(
+        f"evaluate-intervals: calibrated on {result.calibration_origins} origins, "
+        f"measured on {result.holdout_origins} holdout origins",
+        file=sys.stderr,
+    )
+    for level, metrics in result.holdout.items():
+        print(
+            f"  {level:.0%} interval: coverage {metrics.coverage:.1%}, "
+            f"mean width {metrics.mean_width_mw:.0f} MW",
+            file=sys.stderr,
+        )
+    print(f"interval record written to {output_path}", file=sys.stderr)
+    return EXIT_OK
+
+
 def _evaluate_holdout(args: argparse.Namespace) -> int:
     if not args.confirm:
         print(
@@ -307,26 +453,10 @@ def _evaluate_holdout(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE_OR_IO_ERROR
-    selection_path: Path = args.output_dir / "model_selection.json"
-    try:
-        selection = json.loads(selection_path.read_text(encoding="utf-8"))
-        series, data_sha256 = load_processed(args.data_dir / "processed")
-    except FileNotFoundError:
-        print(
-            f"peakwindow: error: no model selection at {selection_path}; run select-model first",
-            file=sys.stderr,
-        )
+    loaded = _load_selection(args)
+    if loaded is None:
         return EXIT_USAGE_OR_IO_ERROR
-    except (OSError, json.JSONDecodeError, PreparationError) as exc:
-        print(f"peakwindow: error: {exc}", file=sys.stderr)
-        return EXIT_USAGE_OR_IO_ERROR
-    if selection.get("data", {}).get("processed_sha256") != data_sha256:
-        print(
-            "peakwindow: error: the model selection was made on different data; "
-            "re-run select-model",
-            file=sys.stderr,
-        )
-        return EXIT_USAGE_OR_IO_ERROR
+    series, data_sha256, selection = loaded
     chosen = selection["selection"]["chosen"]
 
     result = final_evaluation(series, chosen["spec"], float(chosen["alpha"]))

@@ -296,3 +296,63 @@ Reading the result honestly:
 What this result is **not**: it is not a live forecast. It assumes immediate
 availability of past measurements, and it has no prediction interval yet (Phase 4).
 It also covers a single country and a single nine-month test period.
+
+## Rolling-origin backtest (Phase 4, measured, holdout excluded)
+
+`peakwindow backtest` refits the selected configuration (`weekday_interactions`,
+alpha = 0.01) once per test year. Each refit uses an expanding window of every
+usable origin from 2015-01-09 up to 31 December of the previous year. Each fold is
+then scored on its own year, together with both baselines. The 2020 holdout is never
+read; a test confirms the backtest is identical when all 2020 data is destroyed.
+
+| Test year | Fit origins | Test origins | Daily naive MAE | Weekly naive MAE | Ridge MAE | Ridge nMAE | Ridge relative MAE |
+|---|---|---|---|---|---|---|---|
+| 2016 | 357 | 355 | 445.9 | 334.2 | **126.5** | 1.71 % | 0.379 |
+| 2017 | 712 | 362 | 459.4 | 345.4 | **120.0** | 1.59 % | 0.347 |
+| 2018 | 1,074 | 365 | 461.7 | 354.6 | **127.5** | 1.67 % | 0.360 |
+| 2019 | 1,439 | 365 | 480.9 | 359.3 | **126.4** | 1.67 % | 0.352 |
+
+Ridge MAE stays within 120–128 MW in every year, even when fitted on a single year
+(the 2016 fold). The 2020 holdout result (133.7 MW) is consistent with this range.
+On holiday hours Ridge MAE is 234–303 MW per year, roughly twice its overall MAE.
+
+Caveat: the configuration was chosen on 2019 H1 validation data, so for the
+2016–2018 folds the *choice* of spec and alpha is informed by later data. The
+coefficients themselves are always fitted on the past only. Two specs and six alphas
+leave little room for that to matter.
+
+## Prediction intervals (Phase 4)
+
+**Method.** Split-conformal intervals (`uncertainty.py`), calibrated separately for
+each horizon. The model is the final Ridge, refitted on train + validation, which is
+identical to the model scored in the final holdout evaluation. For horizon `h` and
+nominal level `1 − a`, the half-width `q_h` is the `ceil((n + 1)(1 − a))`-th smallest
+absolute residual on the `n = 184` calibration origins (2019-07-01 … 2019-12-31).
+The interval is `prediction ± q_h`. These calibration origins were never used to
+fit or select the model.
+
+**Calibration-period facts (no holdout data involved).** On the calibration period
+Ridge MAE is 118.8 MW, against 338.7 MW for the weekly naive. Interval half-widths
+grow with the horizon:
+
+| Nominal level | Half-width h = 0 | Half-width h = 12 | Half-width h = 23 | Mean full width |
+|---|---|---|---|---|
+| 80 % | 77 MW | 231 MW | 164 MW | 351 MW |
+| 90 % | 91 MW | 401 MW | 261 MW | 556 MW |
+
+### Interval evaluation protocol (pre-registered before opening the holdout)
+
+This protocol was committed **before** `evaluate-intervals` was first run. It will
+not be changed after the results are seen.
+
+1. The nominal levels are 80 % and 90 %, with per-horizon symmetric split-conformal
+   half-widths exactly as defined above. Nothing is tuned afterwards: no widening
+   factor, no other levels, no re-calibration.
+2. Coverage is measured once on all 273 holdout origins (6,552 target hours). The
+   report gives empirical coverage, mean width, coverage by horizon, the
+   weekday/weekend/holiday split, and the shares below and above the interval.
+3. As for the point forecasts, the 2020-04-01 … 2020-06-30 window is reported
+   separately from the other holdout origins.
+4. **Expectation stated in advance:** 2020 is not exchangeable with 2019 H2, mainly
+   because of COVID-19 and a different season mix. Coverage may therefore fall short
+   of nominal, especially on holidays. Any shortfall is reported as it is.

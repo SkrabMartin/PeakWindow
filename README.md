@@ -7,10 +7,10 @@ demand**, with meaningful baselines, strictly chronological evaluation, calibrat
 uncertainty and an interactive historical dashboard. It runs locally on a CPU with
 no paid services.
 
-> **Status: work in progress. Phase 3 (Ridge model and final evaluation) is done.**
-> The point forecasts have been evaluated once on the 2020 holdout, following a
-> protocol committed before the holdout was opened. Prediction intervals, backtests
-> and the dashboard are still to come. PeakWindow is a historical research
+> **Status: work in progress (Phase 4).** The point forecasts have been evaluated
+> once on the 2020 holdout and backtested over 2016–2019. Conformal prediction
+> intervals are calibrated, and their holdout coverage follows a pre-registered
+> protocol. The dashboard is still to come. PeakWindow is a historical research
 > laboratory, not a live forecasting feed and not a grid-control system.
 
 ## What works now vs. later
@@ -18,7 +18,7 @@ no paid services.
 | Works now (Phases 0–3) | Later phases |
 |---|---|
 | Installable `src/` package with a `peakwindow` CLI and `python -m peakwindow` | |
-| Typed contracts: canonical hourly series, 00:00 UTC forecast request, 24 targets, strictly pre-origin history | Calibrated prediction intervals and rolling-origin backtests (Phase 4) |
+| Typed contracts: canonical hourly series, 00:00 UTC forecast request, 24 targets, strictly pre-origin history | |
 | `fetch-opsd` / `prepare-opsd`: verified OPSD download, provenance manifest, alignment check, coverage audit, Parquet series | Historical Streamlit dashboard, optional packaging and deployment (Phase 5) |
 | Leakage-safe calendar and lag features, with future-mutation leakage tests | |
 | Frozen chronological split `split-v1` with a holdout locked in code | |
@@ -26,6 +26,8 @@ no paid services.
 | Czech public-holiday calendar and holiday features | |
 | `select-model`: per-horizon Ridge, 12 candidates fitted on train and chosen by validation MAE | |
 | `evaluate-holdout --confirm`: one final evaluation following a pre-registered protocol | |
+| `backtest`: rolling-origin backtest 2016–2019 with yearly refits | |
+| `evaluate-intervals --confirm`: per-horizon split-conformal 80 % / 90 % intervals | |
 | Synthetic fixtures, an offline test suite, Ruff, strict mypy, GitHub Actions | |
 
 ## Setup
@@ -107,6 +109,19 @@ that record, refuses to run if the processed data changed in the meantime, and w
 `experiments/final_holdout.json` plus the fitted model as JSON coefficients
 (`ridge_final_model.json`, with its SHA-256 in the record).
 
+### Backtest and prediction intervals
+
+```bash
+# Rolling-origin backtest 2016-2019, yearly refit on all earlier origins (no holdout)
+uv run --frozen peakwindow backtest
+
+# FINAL: calibrate conformal intervals on 2019 H2, measure coverage on the 2020 holdout
+uv run --frozen peakwindow evaluate-intervals --confirm
+```
+
+Both commands use the configuration in `model_selection.json`. `evaluate-intervals`
+also checks that its refitted model is identical to `ridge_final_model.json`.
+
 | Exit status | Meaning |
 |---|---|
 | `0` | Success (`validate-data`: every check passed; `prepare-opsd`: series written; `evaluate-baselines`: record written) |
@@ -149,6 +164,7 @@ PeakWindow/
 │       ├── __main__.py
 │       ├── acquisition.py
 │       ├── audit.py
+│       ├── backtest.py
 │       ├── baselines.py
 │       ├── cli.py
 │       ├── contracts.py
@@ -162,6 +178,7 @@ PeakWindow/
 │       ├── py.typed
 │       ├── splits.py
 │       ├── study.py
+│       ├── uncertainty.py
 │       └── validation.py
 ├── tests/
 │   ├── conftest.py
@@ -176,6 +193,7 @@ PeakWindow/
 │   ├── test_opsd.py
 │   ├── test_prepare.py
 │   ├── test_study.py
+│   ├── test_uncertainty.py
 │   └── test_validation.py
 ├── .gitignore
 ├── .python-version
@@ -204,8 +222,10 @@ PeakWindow/
   exceptions and the holdout lock, and computes the metrics for any model.
 - `src/peakwindow/holidays.py` is the Czech public-holiday calendar.
 - `src/peakwindow/models.py` is the per-horizon Ridge forecaster, with JSON export.
-- `src/peakwindow/study.py` runs model selection on validation and the final holdout
-  evaluation.
+- `src/peakwindow/study.py` runs model selection on validation, the final holdout
+  evaluation and the interval evaluation.
+- `src/peakwindow/backtest.py` runs the rolling-origin backtest.
+- `src/peakwindow/uncertainty.py` holds the split-conformal intervals and coverage metrics.
 - `src/peakwindow/cli.py` and `__main__.py` provide the command-line front end:
   presentation, output files and exit codes.
 - `tests/` contains boundary, quality, audit, acquisition, leakage, model, study and
@@ -269,6 +289,17 @@ Ridge beats the weekly naive both inside the COVID-19 window (April–June 2020:
 140.3 vs 284.7 MW) and outside it (130.3 vs 290.1 MW). Public holidays remain its
 largest errors.
 
+## Rolling backtest (2016–2019, holdout excluded)
+
+| Test year | Weekly naive MAE | Ridge MAE | Ridge nMAE |
+|---|---|---|---|
+| 2016 | 334.2 | 126.5 | 1.71 % |
+| 2017 | 345.4 | 120.0 | 1.59 % |
+| 2018 | 354.6 | 127.5 | 1.67 % |
+| 2019 | 359.3 | 126.4 | 1.67 % |
+
+Ridge is refitted every year on earlier data only. Its error is stable across years.
+
 ## Validation results (2019-01-01 … 2019-06-30)
 
 Measured on 181 origins × 24 hours. This is the model-selection period, **not** the
@@ -290,7 +321,8 @@ expected. Details, ablations and the pre-registered final protocol are in
 1. ~~Ingestion and quality audit of the real OPSD Czech series.~~ Done.
 2. ~~Leakage-safe features and daily and weekly seasonal naive baselines.~~ Done.
 3. ~~Ridge and chronological evaluation with a single, pre-registered holdout run.~~ Done.
-4. Calibrated prediction intervals and rolling-origin backtests.
+4. Calibrated prediction intervals and rolling-origin backtests: the backtest is done,
+   and the interval coverage follows the pre-registered protocol.
 5. Historical dashboard and optional packaging.
 
 See [docs/roadmap.md](docs/roadmap.md) and [docs/architecture.md](docs/architecture.md).
@@ -300,14 +332,13 @@ not current features.
 
 ## Limitations
 
-- The forecasts are point forecasts only. Prediction intervals come in Phase 4.
 - Only linear models (Ridge) have been tried. Gradient boosting is optional future work.
 - OPSD states no data license (ENTSO-E terms apply), so each user downloads the
   data and this repository never redistributes it.
 - The final holdout period (2020) includes the COVID-19 demand drop, which made April
   and May about 11–13% lower than in 2019. The results are reported with and without it.
-- There is one test period (nine months of 2020) for one country. Rolling-origin
-  backtests are planned for Phase 4.
+- The final test covers one period (nine months of 2020) for one country. The
+  2016–2019 backtest reused a configuration chosen on 2019 H1.
 - No live feed. This is a historical reconstruction laboratory, and its output must
   never be read as operational guidance.
 - Publication delays of source measurements have not been audited.
