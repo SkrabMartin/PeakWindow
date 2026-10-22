@@ -1,7 +1,7 @@
 [project]
 name = "peakwindow"
-version = "0.3.0"
-description = "Electricity demand forecasting laboratory for historical Czech national load (Phase 2: features and baselines)."
+version = "0.4.0"
+description = "Electricity demand forecasting laboratory for historical Czech national load (Phase 3: Ridge model and final evaluation)."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -13,8 +13,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "numpy>=2.0",
     "pandas>=3.0",
     "pyarrow>=18",
+    "scikit-learn>=1.5",
     "tzdata>=2024.1",
 ]
 
@@ -45,6 +47,11 @@ known-local-folder = ["conftest"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# scikit-learn ships no type information.
+module = ["sklearn", "sklearn.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

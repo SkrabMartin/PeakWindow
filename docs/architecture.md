@@ -12,11 +12,12 @@ cli.py
  │                      ├─► acquisition.py   verify the cached file, read its manifest
  │                      ├─► opsd.py          map columns, check UTC vs CET/CEST alignment
  │                      └─► audit.py ──► validation.py ──► contracts.py
- └─ evaluate-baselines ─► prepare.load_processed (SHA-256 check)
-                          └─► evaluation.py
-                                ├─► splits.py      frozen origins, holdout lock
-                                ├─► features.py ─► contracts.select_history
-                                └─► baselines.py
+ ├─ evaluate-baselines ─► prepare.load_processed (SHA-256 check)
+ │                        └─► evaluation.py
+ │                              ├─► splits.py      frozen origins, holdout lock
+ │                              ├─► features.py ─► contracts.select_history, holidays.py
+ │                              └─► baselines.py
+ └─ select-model / evaluate-holdout ─► study.py ─► evaluation.py, models.py (Ridge)
 
 tests/ ── call every module directly; test_cli.py and test_prepare.py also drive main().
           No test uses the network: downloads are tested with file:// URLs.
@@ -45,8 +46,15 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
   calendar of each target plus lag features. It applies `select_history()` first,
   so it cannot see the origin or anything later.
 - **`baselines.py`**: the daily and weekly seasonal naive, read from lag features.
-- **`evaluation.py`**: `evaluate_baselines()`. It scores every model on the same
-  origins, records data-gap exceptions, computes metrics and enforces the holdout lock.
+- **`holidays.py`**: the Czech public-holiday calendar (fixed dates and the Easter computus).
+- **`models.py`**: `RidgeForecaster`, one standardized Ridge per horizon, with a JSON
+  export of its scaler and coefficients.
+- **`study.py`**: `select_model()` (fit on train, choose by validation MAE) and
+  `final_evaluation()` (refit on train + validation, score the holdout once, plus the
+  pre-declared sensitivity view).
+- **`evaluation.py`**: `build_dataset()` and `evaluate()`. They score every model on
+  the same origins, record data-gap exceptions, compute metrics and enforce the
+  holdout lock. Each origin's features are built from a window that ends at the origin.
   `actual_values()` is the only code that reads target values, and it is used only
   for scoring.
 - **`cli.py`**: argparse front end. It owns all terminal output and exit codes
@@ -64,11 +72,10 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
    `--help` download, write and start nothing.
 4. Downloads and derived files are verified by SHA-256 and recorded in manifests,
    and they live in git-ignored directories.
-5. Runtime dependencies are pandas, pyarrow (Parquet) and tzdata (time zones on
-   Windows). Everything else uses the standard library.
+5. Runtime dependencies are pandas, NumPy, scikit-learn (Ridge), pyarrow (Parquet)
+   and tzdata (time zones on Windows).
 
 ## Planned growth (not implemented)
 
-Later phases will add learned models, uncertainty, backtesting, reporting and a
-dashboard. They will reuse `features.py`, `splits.py` and `evaluation.py` rather than
+Later phases will add uncertainty, backtesting, reporting and a dashboard. They will reuse `features.py`, `splits.py` and `evaluation.py` rather than
 redefine them. See [roadmap.md](roadmap.md).

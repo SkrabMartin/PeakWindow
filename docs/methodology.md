@@ -1,9 +1,9 @@
 # Methodology
 
-> Phases 0–2 implement the time conventions, data-quality rules, the audited real
-> series, leakage-safe features, the frozen split and two seasonal naive baselines.
-> **No learned model exists yet.** The only measured results are baseline errors on
-> the training and validation periods; the final holdout has not been evaluated.
+> Phases 0–3 implement the time conventions, data-quality rules, the audited real
+> series, leakage-safe features, the frozen split, two seasonal naive baselines and a
+> Ridge model selected on validation. All numbers below are measured. Each one says
+> which period it comes from.
 
 ## Time conventions (implemented in Phase 0)
 
@@ -150,6 +150,8 @@ before the origin.
 | Feature | Definition |
 |---|---|
 | `local_hour`, `local_weekday`, `month`, `is_weekend` | Calendar of the **target** in Europe/Prague time (known at issuance) |
+| `is_holiday` | The target's local date is a Czech public holiday (added in Phase 3) |
+| `lag_24h_is_holiday`, `lag_168h_is_holiday` | The local date of the matching lag hour is a public holiday (added in Phase 3) |
 | `lag_24h_mw` | Load at `target − 24 h` |
 | `lag_168h_mw` | Load at `target − 168 h` |
 | `last_load_mw` | Load at `origin − 1 h` |
@@ -194,3 +196,63 @@ Observations on validation:
 - Error grows within the horizon toward midday. For the weekly naive, MAE is 314 MW at
   h = 0 and 433 MW at h = 12. The error is not monotonic in `h`, because the
   horizon is tied to time of day.
+
+## Learned model and selection (Phase 3, measured on validation)
+
+**Holiday calendar.** `holidays.py` computes the Czech public holidays: 11 fixed
+dates, Easter Monday, and Good Friday from 2016. Easter uses the Gregorian computus.
+The holiday features were added because Phase 2 validation showed that holidays
+cause the largest baseline errors. That is a legitimate use of validation, and the
+holdout played no part in it.
+
+**Model.** `RidgeForecaster` fits one `StandardScaler → Ridge(alpha)` model per
+horizon `h`. Two feature specifications were compared:
+
+- `additive`: lags, last load, previous-day mean, holiday flags, local hour (a
+  summer-time marker within one horizon), and weekday and month one-hot columns.
+- `weekday_interactions`: `additive` plus `lag_24h` and `lag_168h` multiplied by each
+  weekday indicator, so the weight on yesterday or last week can depend on the day type.
+
+**Selection.** `peakwindow select-model` fits 12 candidates (2 specs × alpha in
+{0.01, 0.1, 1, 10, 100, 1000}) on the 1,439 training origins and picks the lowest
+validation MAE. **Chosen: `weekday_interactions`, alpha = 0.01.** The validation
+curve is flat for alpha ≤ 1 (134.2–134.4 MW), so choosing the edge of the grid does
+not matter in practice. A test confirms that selection is identical when every value
+after the validation period is destroyed.
+
+| Validation (181 origins) | MAE | RMSE | nMAE | Relative MAE | Abs. error p50 / p90 / p99 |
+|---|---|---|---|---|---|
+| Daily naive | 510.1 | 754.9 | 6.54 % | 1.342 | 288 / 1,410 / 2,263 |
+| Weekly naive | 380.2 | 622.9 | 4.88 % | 1.000 | 230 / 808 / 2,679 |
+| **Ridge** | **134.2** | **191.8** | **1.72 %** | **0.353** | **96 / 292 / 604** |
+
+Checks run because the improvement is large:
+
+- Validation MAE rises with the horizon, from 47 MW at h = 0 to about 185 MW around
+  midday and about 125 MW late in the day.
+- Destroying every value from the origin onward changed predictions by 0.0 MW.
+- The in-sample training MAE is 108.6 MW, against 134.2 MW on validation.
+- Without the three holiday features, validation MAE is 151.4 MW. With them it is
+  134.2 MW, so they lower it by about 11 %.
+
+The gain over the weekly naive has a plain explanation. On Tuesday–Friday, yesterday
+is a far better guide than last week: the daily naive's MAE is 245 MW there. Ridge
+learns per weekday which lag to trust. It also corrects the level with the last
+observed hour.
+
+## Final evaluation protocol (pre-registered before opening the holdout)
+
+This protocol was committed to the repository **before** `evaluate-holdout` was
+first run. It will not be changed after the results are seen.
+
+1. The configuration recorded in `experiments/model_selection.json`
+   (`weekday_interactions`, alpha = 0.01) is refitted on training + validation origins
+   (2015-01-09 … 2019-06-30). The calibration period stays unused, so it remains
+   out-of-sample for Phase 4.
+2. Ridge and both seasonal naive baselines are scored once on all 273 holdout origins
+   (2020-01-01 … 2020-09-29), on identical target hours, with the metrics defined above.
+3. The headline result is the whole holdout. A pre-declared sensitivity view reports
+   origins 2020-04-01 … 2020-06-30 (the COVID-19 demand drop) separately from the
+   remaining holdout origins.
+4. No re-tuning, feature changes or re-selection follow from the holdout. If Ridge
+   does not beat the weekly naive there, that result is reported as it is.

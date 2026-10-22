@@ -10,6 +10,10 @@ Columns (in order):
 * ``origin_utc``, ``target_utc``, ``horizon_h`` (0..23)
 * ``local_hour``, ``local_weekday`` (0 = Monday), ``month``, ``is_weekend``:
   the target's Europe/Prague calendar, because demand follows local time
+* ``is_holiday``: the target's local date is a Czech public holiday
+* ``lag_24h_is_holiday``, ``lag_168h_is_holiday``: the local date of the hour the
+  matching lag comes from is a public holiday (a lag copied from a holiday is a
+  poor guide to an ordinary day, and vice versa)
 * ``lag_24h_mw``: load at ``target - 24 h`` (same local-clock hour yesterday,
   except across daylight-saving changes)
 * ``lag_168h_mw``: load at ``target - 168 h`` (same hour one week earlier)
@@ -35,18 +39,37 @@ from peakwindow.contracts import (
     select_history,
     target_timestamps,
 )
+from peakwindow.holidays import is_czech_public_holiday
 
 PRAGUE = ZoneInfo("Europe/Prague")
 
-CALENDAR_FEATURES = ("local_hour", "local_weekday", "month", "is_weekend")
+CALENDAR_FEATURES = (
+    "local_hour",
+    "local_weekday",
+    "month",
+    "is_weekend",
+    "is_holiday",
+    "lag_24h_is_holiday",
+    "lag_168h_is_holiday",
+)
 LOAD_FEATURES = ("lag_24h_mw", "lag_168h_mw", "last_load_mw", "prev_24h_mean_mw")
 FEATURE_COLUMNS = CALENDAR_FEATURES + LOAD_FEATURES
+
+# The oldest hour any feature reads is ``origin - 168 h`` (lag_168h at h = 0), so a
+# series window starting there yields exactly the same features as the full series.
+MAX_LOOKBACK = 168 * HOUR
 KEY_COLUMNS = ("origin_utc", "target_utc", "horizon_h")
 
 
+def _holidays(timestamps: pd.DatetimeIndex) -> list[bool]:
+    return [is_czech_public_holiday(day) for day in timestamps.tz_convert(PRAGUE).date]
+
+
 def _lookup(history: pd.Series, timestamps: pd.DatetimeIndex) -> list[float]:
-    values: list[float] = history.reindex(timestamps).astype("float64").tolist()
-    return values
+    """Load at ``timestamps`` (NaN where absent); ``history`` has a unique time index."""
+    positions = history.index.get_indexer(timestamps)
+    values = history.to_numpy(dtype="float64")
+    return [float(values[p]) if p >= 0 else float("nan") for p in positions]
 
 
 def build_features(series: pd.DataFrame, request: ForecastRequest) -> pd.DataFrame:
@@ -76,6 +99,9 @@ def build_features(series: pd.DataFrame, request: ForecastRequest) -> pd.DataFra
             "local_weekday": local.day_of_week,
             "month": local.month,
             "is_weekend": local.day_of_week >= 5,
+            "is_holiday": _holidays(targets),
+            "lag_24h_is_holiday": _holidays(targets - 24 * HOUR),
+            "lag_168h_is_holiday": _holidays(targets - 168 * HOUR),
             "lag_24h_mw": _lookup(by_time, targets - 24 * HOUR),
             "lag_168h_mw": _lookup(by_time, targets - 168 * HOUR),
             "last_load_mw": _lookup(by_time, pd.DatetimeIndex([origin - HOUR])) * len(targets),

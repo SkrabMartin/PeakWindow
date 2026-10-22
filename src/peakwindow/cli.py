@@ -3,11 +3,13 @@
 Exit status:
 
 * 0 -- success (``validate-data``: every quality check passed;
-  ``prepare-opsd``: processed series written; ``evaluate-baselines``: record written)
+  ``prepare-opsd``: processed series written; ``evaluate-baselines``,
+  ``select-model``, ``evaluate-holdout``: record written)
 * 1 -- the data was read but failed (``validate-data``: a quality check;
   ``prepare-opsd``: the series could not be processed or UTC/local alignment failed)
 * 2 -- usage error, network/download failure, checksum mismatch, a locked holdout,
-  or a file that could not be read or written
+  a missing or mismatched model-selection record, or a file that could not be read
+  or written
 """
 
 from __future__ import annotations
@@ -20,12 +22,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from peakwindow import __version__, baselines, opsd
-from peakwindow.acquisition import AcquisitionError, ProgressCallback, fetch
+from peakwindow.acquisition import AcquisitionError, ProgressCallback, fetch, sha256_of
 from peakwindow.csv_adapter import CsvReadError, read_canonical_csv
-from peakwindow.evaluation import HoldoutLockedError, evaluate_baselines
+from peakwindow.evaluation import HoldoutLockedError, ModelMetrics, evaluate_baselines
 from peakwindow.features import FEATURE_COLUMNS
 from peakwindow.prepare import PreparationError, load_processed, prepare_opsd
-from peakwindow.splits import Period
+from peakwindow.splits import SPLIT_VERSION, Period
+from peakwindow.study import RIDGE, final_evaluation, select_model
 from peakwindow.validation import validate_hourly_frame
 
 EXIT_OK = 0
@@ -38,8 +41,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="peakwindow",
         description=(
             "PeakWindow: historical Czech electricity-demand forecasting laboratory. "
-            "Provides OPSD data acquisition, offline preparation, data-quality audits and "
-            "seasonal naive baseline evaluation; no learned models yet."
+            "Provides OPSD data acquisition, offline preparation, data-quality audits, "
+            "seasonal naive baselines, Ridge model selection and the final holdout evaluation."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -123,6 +126,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="where to write the experiment record (default: ./experiments)",
     )
     evaluate_parser.set_defaults(handler=_evaluate_baselines)
+
+    experiments_help = "experiment records directory (default: ./experiments)"
+    select_parser = commands.add_parser(
+        "select-model",
+        help="fit Ridge candidates on train and choose one by validation MAE",
+        description=(
+            "Fit every Ridge candidate (feature spec and alpha) on the training origins, "
+            "score each on validation, and record the choice in model_selection.json. "
+            "The holdout is not touched."
+        ),
+    )
+    select_parser.add_argument("--data-dir", type=Path, default=Path("data"), help=data_dir_help)
+    select_parser.add_argument(
+        "--output-dir", type=Path, default=Path("experiments"), help=experiments_help
+    )
+    select_parser.set_defaults(handler=_select_model)
+
+    holdout_parser = commands.add_parser(
+        "evaluate-holdout",
+        help="FINAL: refit the selected model on train + validation and score the holdout",
+        description=(
+            "Read the configuration chosen by select-model, refit it on train + validation, "
+            "and score it with both baselines on the 2020 holdout. This is the study's final "
+            "evaluation; it requires --confirm."
+        ),
+    )
+    holdout_parser.add_argument("--data-dir", type=Path, default=Path("data"), help=data_dir_help)
+    holdout_parser.add_argument(
+        "--output-dir", type=Path, default=Path("experiments"), help=experiments_help
+    )
+    holdout_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="confirm that models are frozen and the holdout may be opened",
+    )
+    holdout_parser.set_defaults(handler=_evaluate_holdout)
     return parser
 
 
@@ -201,6 +240,126 @@ def _prepare_opsd(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _utc_now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_json(path: Path, data: dict[str, object]) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, indent=2, allow_nan=False, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"peakwindow: error: cannot write {path}: {exc.strerror or exc}", file=sys.stderr)
+        return False
+    return True
+
+
+def _print_metrics(models: dict[str, ModelMetrics]) -> None:
+    for name, metrics in models.items():
+        print(
+            f"  {name}: MAE {metrics.mae:.1f} MW, RMSE {metrics.rmse:.1f} MW, "
+            f"nMAE {metrics.nmae_pct:.2f} %, relative MAE {metrics.relative_mae:.3f}",
+            file=sys.stderr,
+        )
+
+
+def _select_model(args: argparse.Namespace) -> int:
+    try:
+        series, data_sha256 = load_processed(args.data_dir / "processed")
+    except PreparationError as exc:
+        print(f"peakwindow: error: {exc}", file=sys.stderr)
+        return EXIT_USAGE_OR_IO_ERROR
+    result = select_model(series)
+    record: dict[str, object] = {
+        "schema_version": "1",
+        "experiment": "model_selection",
+        "generated_at_utc": _utc_now(),
+        "peakwindow_version": __version__,
+        "split_version": SPLIT_VERSION,
+        "data": {"processed_sha256": data_sha256, "source_doi": opsd.DOI_URL},
+        "feature_columns": list(FEATURE_COLUMNS),
+        "seed": None,
+        "selection": result.to_dict(),
+    }
+    output_path: Path = args.output_dir / "model_selection.json"
+    if not _write_json(output_path, record):
+        return EXIT_USAGE_OR_IO_ERROR
+    chosen = result.chosen
+    print(
+        f"select-model [{SPLIT_VERSION}]: {len(result.candidates)} candidates fitted on "
+        f"{result.training_origins} training origins; chosen spec={chosen.spec} "
+        f"alpha={chosen.alpha} (validation MAE {chosen.validation.mae:.1f} MW)",
+        file=sys.stderr,
+    )
+    _print_metrics(result.validation.models)
+    print(f"selection record written to {output_path}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _evaluate_holdout(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print(
+            "peakwindow: error: evaluate-holdout opens the final holdout; re-run with "
+            "--confirm once the model selection is frozen",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_OR_IO_ERROR
+    selection_path: Path = args.output_dir / "model_selection.json"
+    try:
+        selection = json.loads(selection_path.read_text(encoding="utf-8"))
+        series, data_sha256 = load_processed(args.data_dir / "processed")
+    except FileNotFoundError:
+        print(
+            f"peakwindow: error: no model selection at {selection_path}; run select-model first",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_OR_IO_ERROR
+    except (OSError, json.JSONDecodeError, PreparationError) as exc:
+        print(f"peakwindow: error: {exc}", file=sys.stderr)
+        return EXIT_USAGE_OR_IO_ERROR
+    if selection.get("data", {}).get("processed_sha256") != data_sha256:
+        print(
+            "peakwindow: error: the model selection was made on different data; "
+            "re-run select-model",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_OR_IO_ERROR
+    chosen = selection["selection"]["chosen"]
+
+    result = final_evaluation(series, chosen["spec"], float(chosen["alpha"]))
+    model_path: Path = args.output_dir / "ridge_final_model.json"
+    if not _write_json(model_path, result.model_export):
+        return EXIT_USAGE_OR_IO_ERROR
+    record: dict[str, object] = {
+        "schema_version": "1",
+        "experiment": "final_holdout",
+        "generated_at_utc": _utc_now(),
+        "peakwindow_version": __version__,
+        "split_version": SPLIT_VERSION,
+        "data": {"processed_sha256": data_sha256, "source_doi": opsd.DOI_URL},
+        "model_selection_generated_at_utc": selection.get("generated_at_utc"),
+        "model_artifact": {"file_name": model_path.name, "sha256": sha256_of(model_path)},
+        "seed": None,
+        "result": result.to_dict(),
+    }
+    output_path: Path = args.output_dir / "final_holdout.json"
+    if not _write_json(output_path, record):
+        return EXIT_USAGE_OR_IO_ERROR
+    holdout = result.holdout
+    print(
+        f"evaluate-holdout [{SPLIT_VERSION}]: {RIDGE} spec={result.spec} alpha={result.alpha} "
+        f"refit on {result.fit_origins} origins; holdout {holdout.origins_evaluated} of "
+        f"{holdout.origins_in_period} origins",
+        file=sys.stderr,
+    )
+    _print_metrics(holdout.models)
+    print(f"final record written to {output_path}", file=sys.stderr)
+    return EXIT_OK
+
+
 def _evaluate_baselines(args: argparse.Namespace) -> int:
     period = Period(args.period)
     processed_dir: Path = args.data_dir / "processed"
@@ -211,10 +370,10 @@ def _evaluate_baselines(args: argparse.Namespace) -> int:
         print(f"peakwindow: error: {exc}", file=sys.stderr)
         return EXIT_USAGE_OR_IO_ERROR
 
-    record = {
+    record: dict[str, object] = {
         "schema_version": "1",
         "experiment": f"baselines_{period.value}",
-        "generated_at_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at_utc": _utc_now(),
         "peakwindow_version": __version__,
         "data": {"processed_sha256": data_sha256, "source_doi": opsd.DOI_URL},
         "config": {
@@ -226,16 +385,7 @@ def _evaluate_baselines(args: argparse.Namespace) -> int:
         "evaluation": result.to_dict(),
     }
     output_path: Path = args.output_dir / f"baselines_{period.value}.json"
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(record, indent=2, allow_nan=False, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        print(
-            f"peakwindow: error: cannot write {output_path}: {exc.strerror or exc}", file=sys.stderr
-        )
+    if not _write_json(output_path, record):
         return EXIT_USAGE_OR_IO_ERROR
 
     print(
@@ -244,12 +394,7 @@ def _evaluate_baselines(args: argparse.Namespace) -> int:
         f"{len(result.exceptions)} data-gap exception(s)",
         file=sys.stderr,
     )
-    for name, metrics in result.models.items():
-        print(
-            f"  {name}: MAE {metrics.mae:.1f} MW, RMSE {metrics.rmse:.1f} MW, "
-            f"nMAE {metrics.nmae_pct:.2f} %, relative MAE {metrics.relative_mae:.3f}",
-            file=sys.stderr,
-        )
+    _print_metrics(result.models)
     print(f"experiment record written to {output_path}", file=sys.stderr)
     return EXIT_OK
 

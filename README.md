@@ -7,23 +7,24 @@ demand**, with meaningful baselines, strictly chronological evaluation, calibrat
 uncertainty and an interactive historical dashboard. It runs locally on a CPU with
 no paid services.
 
-> **Status: work in progress. Phase 2 (features and baselines) is done.**
-> The real Czech load series is downloaded, audited and scored with two seasonal
-> naive baselines on the training and validation periods. There is **no learned
-> model yet**, and the final holdout has **not** been evaluated. PeakWindow is a
-> historical research laboratory, not a live forecasting feed and not a
-> grid-control system.
+> **Status: work in progress (Phase 3).** A Ridge model has been selected on the
+> validation period. The final evaluation protocol is committed, and the 2020 holdout
+> result is reported only by the final evaluation. PeakWindow is a historical
+> research laboratory, not a live forecasting feed and not a grid-control system.
 
 ## What works now vs. later
 
-| Works now (Phases 0–2) | Later phases |
+| Works now (Phases 0–3) | Later phases |
 |---|---|
-| Installable `src/` package with a `peakwindow` CLI and `python -m peakwindow` | Public-holiday feature, Ridge (optionally gradient boosting) and the final holdout evaluation (Phase 3) |
+| Installable `src/` package with a `peakwindow` CLI and `python -m peakwindow` | |
 | Typed contracts: canonical hourly series, 00:00 UTC forecast request, 24 targets, strictly pre-origin history | Calibrated prediction intervals and rolling-origin backtests (Phase 4) |
 | `fetch-opsd` / `prepare-opsd`: verified OPSD download, provenance manifest, alignment check, coverage audit, Parquet series | Historical Streamlit dashboard, optional packaging and deployment (Phase 5) |
 | Leakage-safe calendar and lag features, with future-mutation leakage tests | |
 | Frozen chronological split `split-v1` with a holdout locked in code | |
-| `evaluate-baselines`: daily and weekly seasonal naive, MAE, RMSE, nMAE, relative MAE, experiment records | |
+| `evaluate-baselines`: daily and weekly seasonal naive, MAE, RMSE, nMAE, relative MAE, error quantiles, experiment records | |
+| Czech public-holiday calendar and holiday features | |
+| `select-model`: per-horizon Ridge, 12 candidates fitted on train and chosen by validation MAE | |
+| `evaluate-holdout --confirm`: one final evaluation following a pre-registered protocol | |
 | Synthetic fixtures, an offline test suite, Ruff, strict mypy, GitHub Actions | |
 
 ## Setup
@@ -90,6 +91,21 @@ SHA-256 of the processed data, the configuration, the data-gap exceptions and th
 metrics. Allowed periods are `train`, `validation` and `calibration`. The final
 `holdout` is locked.
 
+### Ridge model and final evaluation
+
+```bash
+# Fit 12 Ridge candidates on train, choose by validation MAE (holdout untouched)
+uv run --frozen peakwindow select-model
+
+# FINAL: refit the chosen model on train + validation and score the 2020 holdout
+uv run --frozen peakwindow evaluate-holdout --confirm
+```
+
+`select-model` writes `experiments/model_selection.json`. `evaluate-holdout` reads
+that record, refuses to run if the processed data changed in the meantime, and writes
+`experiments/final_holdout.json` plus the fitted model as JSON coefficients
+(`ridge_final_model.json`, with its SHA-256 in the record).
+
 | Exit status | Meaning |
 |---|---|
 | `0` | Success (`validate-data`: every check passed; `prepare-opsd`: series written; `evaluate-baselines`: record written) |
@@ -138,10 +154,13 @@ PeakWindow/
 │       ├── csv_adapter.py
 │       ├── evaluation.py
 │       ├── features.py
+│       ├── holidays.py
+│       ├── models.py
 │       ├── opsd.py
 │       ├── prepare.py
 │       ├── py.typed
 │       ├── splits.py
+│       ├── study.py
 │       └── validation.py
 ├── tests/
 │   ├── conftest.py
@@ -151,8 +170,11 @@ PeakWindow/
 │   ├── test_contracts.py
 │   ├── test_evaluation.py
 │   ├── test_features.py
+│   ├── test_holidays.py
+│   ├── test_models.py
 │   ├── test_opsd.py
 │   ├── test_prepare.py
+│   ├── test_study.py
 │   └── test_validation.py
 ├── .gitignore
 ├── .python-version
@@ -177,12 +199,16 @@ PeakWindow/
 - `src/peakwindow/splits.py` defines the frozen chronological split `split-v1`.
 - `src/peakwindow/features.py` is the leakage-safe feature builder (24 rows per origin).
 - `src/peakwindow/baselines.py` holds the daily and weekly seasonal naive baselines.
-- `src/peakwindow/evaluation.py` scores the baselines per period, applies the
-  data-gap exceptions and the holdout lock, and computes the metrics.
+- `src/peakwindow/evaluation.py` builds datasets per period, applies the data-gap
+  exceptions and the holdout lock, and computes the metrics for any model.
+- `src/peakwindow/holidays.py` is the Czech public-holiday calendar.
+- `src/peakwindow/models.py` is the per-horizon Ridge forecaster, with JSON export.
+- `src/peakwindow/study.py` runs model selection on validation and the final holdout
+  evaluation.
 - `src/peakwindow/cli.py` and `__main__.py` provide the command-line front end:
   presentation, output files and exit codes.
-- `tests/` contains boundary, quality, audit, acquisition, leakage, evaluation and CLI
-  tests. They use only synthetic data and `file://` URLs.
+- `tests/` contains boundary, quality, audit, acquisition, leakage, model, study and
+  CLI tests. They use only synthetic data and `file://` URLs.
 - `data/fixtures/` holds the synthetic fixture and its generation rule.
 - `docs/` holds the methodology, architecture, data provenance, roadmap and the
   original project brief.
@@ -226,24 +252,28 @@ Details: [docs/methodology.md](docs/methodology.md).
 - **Generated files** (`artifacts/`, `experiments/`, `data/raw/`, `data/processed/`,
   `*.parquet`) are git-ignored and never committed.
 
-## Baseline results (validation, 2019-01-01 … 2019-06-30)
+## Validation results (2019-01-01 … 2019-06-30)
 
-Measured on 181 origins × 24 hours. These are **not** final holdout results.
+Measured on 181 origins × 24 hours. This is the model-selection period, **not** the
+final holdout.
 
 | Model | MAE (MW) | RMSE (MW) | nMAE | Relative MAE |
 |---|---|---|---|---|
 | Seasonal naive, daily (`t − 24 h`) | 510.1 | 754.9 | 6.54 % | 1.342 |
-| **Seasonal naive, weekly (`t − 168 h`)** | **380.2** | **622.9** | **4.88 %** | **1.000** |
+| Seasonal naive, weekly (`t − 168 h`) | 380.2 | 622.9 | 4.88 % | 1.000 |
+| **Ridge, per horizon (selected)** | **134.2** | **191.8** | **1.72 %** | **0.353** |
 
-The weekly naive is the reference that any learned model must beat. Both baselines
-fail most around public holidays. Training-period results and details are in
+The large improvement was checked for leakage. Destroying all data from the origin
+onward leaves the predictions unchanged, and the error grows with the horizon as
+expected. Details, ablations and the pre-registered final protocol are in
 [docs/methodology.md](docs/methodology.md).
 
 ## Roadmap
 
 1. ~~Ingestion and quality audit of the real OPSD Czech series.~~ Done.
 2. ~~Leakage-safe features and daily and weekly seasonal naive baselines.~~ Done.
-3. Ridge and chronological evaluation (MAE and RMSE in MW, normalized MAE).
+3. Ridge and chronological evaluation: the model is selected, and the final holdout
+   evaluation follows the pre-registered protocol.
 4. Calibrated prediction intervals and rolling-origin backtests.
 5. Historical dashboard and optional packaging.
 
@@ -254,9 +284,8 @@ not current features.
 
 ## Limitations
 
-- No learned model yet. The only measured results are baseline errors on the
-  training and validation periods.
-- No public-holiday feature yet, even though holidays cause the largest baseline errors.
+- The forecasts are point forecasts only. Prediction intervals come in Phase 4.
+- Only linear models (Ridge) have been tried. Gradient boosting is optional future work.
 - OPSD states no data license (ENTSO-E terms apply), so each user downloads the
   data and this repository never redistributes it.
 - The final holdout period (2020) includes the COVID-19 demand drop, which made April
