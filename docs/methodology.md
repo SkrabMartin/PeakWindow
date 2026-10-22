@@ -356,3 +356,42 @@ not be changed after the results are seen.
 4. **Expectation stated in advance:** 2020 is not exchangeable with 2019 H2, mainly
    because of COVID-19 and a different season mix. Coverage may therefore fall short
    of nominal, especially on holidays. Any shortfall is reported as it is.
+
+### Interval results on the holdout (measured once, 2026-10-23)
+
+The run followed the protocol above. The refitted model was verified to be identical
+to the one in the final point evaluation (`model_matches_final_holdout_model: true`).
+
+| Nominal | Empirical coverage | Mean width | Weekday | Weekend | Holiday | Below lower | Above upper |
+|---|---|---|---|---|---|---|---|
+| 80 % | **72.6 %** | 351 MW | 70.3 % | 78.3 % | 41.9 % | 7.3 % | 20.2 % |
+| 90 % | **90.2 %** | 556 MW | 90.0 % | 90.9 % | 62.3 % | 2.5 % | 7.3 % |
+
+| Sensitivity view | 80 % coverage | 90 % coverage |
+|---|---|---|
+| 2020-04-01 … 2020-06-30 (91 origins) | 69.7 % | 87.0 % |
+| Other holdout origins (182) | 74.0 % | 91.9 % |
+
+Reading the result honestly:
+
+- **The 90 % interval met its target (90.2 %). The 80 % interval did not: it covered
+  72.6 %, 7.4 points short.** No widening factor or re-calibration was applied
+  afterwards, as the protocol requires.
+- **The misses are one-sided.** At the 80 % level the actual load ends above the
+  interval 20.2 % of the time and below it only 7.3 % of the time. Ridge
+  under-predicts in 2020 by 54.7 MW on average, against 17.8 MW on the calibration
+  period, and by about 60–100 MW from May to September 2020. Symmetric intervals
+  calibrated on 2019 H2 cannot absorb that shift. This is the non-exchangeability
+  risk stated in advance. (The bias figures were computed after the run, to
+  describe the result. Nothing was tuned on them.)
+- **Holidays are badly covered** (41.9 % and 62.3 %), consistent with the larger
+  holiday point errors. The calibration window has only a few holidays per horizon.
+- The COVID-19 window covers less, but the shortfall is not limited to it. Outside
+  the window, 80 % coverage is still 74.0 %.
+- By horizon, 80 % coverage ranges from 60 % to 90 %. It is lowest in the morning and
+  midday hours and highest at h = 0–1.
+
+Directions for future work, not tested here: conditional calibration (for example
+separate holiday and ordinary-day widths), asymmetric intervals from signed residual
+quantiles, and rolling re-calibration on recent residuals. Any of them would need a
+new pre-registered evaluation period, because the 2020 holdout has now been seen.

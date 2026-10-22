@@ -7,11 +7,12 @@ demand**, with meaningful baselines, strictly chronological evaluation, calibrat
 uncertainty and an interactive historical dashboard. It runs locally on a CPU with
 no paid services.
 
-> **Status: work in progress (Phase 4).** The point forecasts have been evaluated
-> once on the 2020 holdout and backtested over 2016–2019. Conformal prediction
-> intervals are calibrated, and their holdout coverage follows a pre-registered
-> protocol. The dashboard is still to come. PeakWindow is a historical research
-> laboratory, not a live forecasting feed and not a grid-control system.
+> **Status: work in progress. Phase 4 (backtests and prediction intervals) is done.**
+> The point forecasts and 80 % / 90 % conformal intervals have each been evaluated
+> once on the 2020 holdout, following protocols committed before the holdout was
+> opened. They are also backtested over 2016–2019. The dashboard is still to come.
+> PeakWindow is a historical research laboratory, not a live forecasting feed and
+> not a grid-control system.
 
 ## What works now vs. later
 
@@ -289,6 +290,17 @@ Ridge beats the weekly naive both inside the COVID-19 window (April–June 2020:
 140.3 vs 284.7 MW) and outside it (130.3 vs 290.1 MW). Public holidays remain its
 largest errors.
 
+**Prediction intervals** (per-horizon split conformal, calibrated on 2019 H2):
+
+| Nominal | Holdout coverage | Mean width | Holiday coverage |
+|---|---|---|---|
+| 80 % | 72.6 % (too narrow) | 351 MW | 41.9 % |
+| 90 % | 90.2 % | 556 MW | 62.3 % |
+
+The 90 % interval met its target. The 80 % interval undercovered because Ridge
+under-predicts in 2020 (by 55 MW on average), and the misses are mostly above the
+upper bound. Details are in [docs/methodology.md](docs/methodology.md#interval-results-on-the-holdout-measured-once-2026-10-23).
+
 ## Rolling backtest (2016–2019, holdout excluded)
 
 | Test year | Weekly naive MAE | Ridge MAE | Ridge nMAE |
@@ -321,8 +333,7 @@ expected. Details, ablations and the pre-registered final protocol are in
 1. ~~Ingestion and quality audit of the real OPSD Czech series.~~ Done.
 2. ~~Leakage-safe features and daily and weekly seasonal naive baselines.~~ Done.
 3. ~~Ridge and chronological evaluation with a single, pre-registered holdout run.~~ Done.
-4. Calibrated prediction intervals and rolling-origin backtests: the backtest is done,
-   and the interval coverage follows the pre-registered protocol.
+4. ~~Calibrated prediction intervals and rolling-origin backtests.~~ Done.
 5. Historical dashboard and optional packaging.
 
 See [docs/roadmap.md](docs/roadmap.md) and [docs/architecture.md](docs/architecture.md).
@@ -339,6 +350,8 @@ not current features.
   and May about 11–13% lower than in 2019. The results are reported with and without it.
 - The final test covers one period (nine months of 2020) for one country. The
   2016–2019 backtest reused a configuration chosen on 2019 H1.
+- The 80 % interval undercovers on the holdout (72.6 %), and intervals are much too
+  narrow on public holidays. Intervals are symmetric and not conditioned on day type.
 - No live feed. This is a historical reconstruction laboratory, and its output must
   never be read as operational guidance.
 - Publication delays of source measurements have not been audited.
