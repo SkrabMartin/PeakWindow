@@ -3,7 +3,7 @@
 > **Status note (Phase 0):** this is the original design brief for PeakWindow. It is
 > preserved here verbatim, below this note, as the design source. It describes the
 > **eventual product**. Almost none of it is implemented in Phase 0. What exists
-> today is listed in [`PHASE_0_REPORT.md`](PHASE_0_REPORT.md). Statements about the
+> today is listed in the [README](../README.md). Statements about the
 > OPSD dataset are the brief's planning assumptions; verified metadata is recorded
 > separately in [`data_sources.md`](data_sources.md). The repository structure
 > suggested at the end of the brief is a target layout, not the current one.

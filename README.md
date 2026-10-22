@@ -89,7 +89,6 @@ PeakWindow/
 │   ├── architecture.md
 │   ├── data_sources.md
 │   ├── methodology.md
-│   ├── PHASE_0_REPORT.md
 │   ├── project_brief.md
 │   └── roadmap.md
 ├── src/
@@ -123,8 +122,8 @@ PeakWindow/
   presentation, output files and exit codes.
 - `tests/` contains the boundary, quality-rule and CLI tests.
 - `data/fixtures/` holds the synthetic fixture and its generation rule.
-- `docs/` holds the methodology, architecture, data provenance, roadmap, the
-  Phase 0 report and the original project brief.
+- `docs/` holds the methodology, architecture, data provenance, roadmap and the
+  original project brief.
 
 ## Time semantics
 
@@ -169,8 +168,8 @@ Details: [docs/methodology.md](docs/methodology.md).
 4. Calibrated prediction intervals and rolling-origin backtests.
 5. Historical dashboard and optional packaging.
 
-See [docs/roadmap.md](docs/roadmap.md), [docs/architecture.md](docs/architecture.md)
-and [docs/PHASE_0_REPORT.md](docs/PHASE_0_REPORT.md). The original design brief is
+See [docs/roadmap.md](docs/roadmap.md) and [docs/architecture.md](docs/architecture.md).
+The original design brief is
 in [docs/project_brief.md](docs/project_brief.md). It describes the eventual product,
 not current features.
 
