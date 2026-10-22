@@ -7,20 +7,22 @@ demand**, with meaningful baselines, strictly chronological evaluation, calibrat
 uncertainty and an interactive historical dashboard. It runs locally on a CPU with
 no paid services.
 
-> **Status: Phase 0 (foundations) — historical research laboratory, synthetic demo only.**
-> There are no trained models, no forecasts and no measured predictive results yet.
-> The only bundled data is a **synthetic** fixture. PeakWindow is not a live
-> forecasting feed and not a grid-control system.
+> **Status: work in progress. Phase 1 (data ingestion and audit) is done.**
+> The real Czech load series can be downloaded, verified and audited, but there are
+> **no trained models, no forecasts and no measured predictive results yet**.
+> PeakWindow is a historical research laboratory, not a live forecasting feed and not
+> a grid-control system.
 
 ## What works now vs. later
 
-| Works now (Phase 0) | Later phases |
+| Works now (Phases 0–1) | Later phases |
 |---|---|
-| Installable `src/` package with a `peakwindow` CLI and `python -m peakwindow` | OPSD download, ingestion and real-data quality audit (Phase 1) |
-| Typed contracts: canonical hourly series, 00:00 UTC forecast request, 24 targets | Leakage-safe features and seasonal naive baselines (Phase 2) |
-| History selection that strictly excludes the origin and everything after it | Ridge (optionally gradient boosting) and chronological evaluation (Phase 3) |
-| Offline data-quality validator with a JSON report (gaps, duplicates, ordering, timestamp and load issues) | Calibrated prediction intervals and rolling-origin backtests (Phase 4) |
-| Deterministic synthetic fixture, 68 tests, Ruff, strict mypy, GitHub Actions | Historical Streamlit dashboard, optional packaging and deployment (Phase 5) |
+| Installable `src/` package with a `peakwindow` CLI and `python -m peakwindow` | Leakage-safe features and seasonal naive baselines (Phase 2) |
+| Typed contracts: canonical hourly series, 00:00 UTC forecast request, 24 targets, strictly pre-origin history | Ridge (optionally gradient boosting) and chronological evaluation (Phase 3) |
+| Offline data-quality validator with a JSON report | Calibrated prediction intervals and rolling-origin backtests (Phase 4) |
+| `fetch-opsd`: verified download (SHA-256, size) with a provenance manifest | Historical Streamlit dashboard, optional packaging and deployment (Phase 5) |
+| `prepare-opsd`: offline Czech series extraction, UTC/CET alignment check, coverage audit, Parquet output | |
+| Synthetic fixtures, an offline test suite, Ruff, strict mypy, GitHub Actions | |
 
 ## Setup
 
@@ -34,8 +36,8 @@ cd PeakWindow
 uv sync --frozen --group dev
 ```
 
-Installing dependencies is the only step that needs network access. Validation
-and tests then run fully offline.
+Network access is needed only for installing dependencies and for the explicit
+`fetch-opsd` download. Everything else, including all tests, runs offline.
 
 ## CLI
 
@@ -55,11 +57,27 @@ explicit offset) and `load_mw`. `--synthetic` records in the report that the inp
 is synthetic. Without it, provenance is recorded as `null` (undeclared). PeakWindow
 does not guess.
 
+### Real data (OPSD)
+
+```bash
+# One-time download (~130 MB) into data/raw/, verified by SHA-256, with a manifest
+uv run --frozen peakwindow fetch-opsd
+
+# Offline: extract and audit the Czech series, write data/processed/
+uv run --frozen peakwindow prepare-opsd
+```
+
+`prepare-opsd` writes `data/processed/opsd_2020-10-06_cz_load.parquet` (columns
+`timestamp_utc`, `load_mw`; missing hours kept as NaN) and
+`opsd_2020-10-06_cz_load.audit.json` (provenance, alignment and audit). Both
+commands accept `--data-dir`. A cached download is re-verified and reused, and
+`fetch-opsd --force` downloads again.
+
 | Exit status | Meaning |
 |---|---|
-| `0` | Input passed every quality check |
-| `1` | Input was read but failed at least one check (issues are listed on stderr and in the report) |
-| `2` | Usage error, or the input or output file could not be read or written |
+| `0` | Success (`validate-data`: every check passed; `prepare-opsd`: series written) |
+| `1` | Data was read but failed (`validate-data`: a quality check; `prepare-opsd`: series not processable or alignment failed) |
+| `2` | Usage error, network or checksum failure, or a file that could not be read or written |
 
 ## Verification
 
@@ -95,14 +113,23 @@ PeakWindow/
 │   └── peakwindow/
 │       ├── __init__.py
 │       ├── __main__.py
+│       ├── acquisition.py
+│       ├── audit.py
 │       ├── cli.py
 │       ├── contracts.py
 │       ├── csv_adapter.py
+│       ├── opsd.py
+│       ├── prepare.py
 │       ├── py.typed
 │       └── validation.py
 ├── tests/
+│   ├── conftest.py
+│   ├── test_acquisition.py
+│   ├── test_audit.py
 │   ├── test_cli.py
 │   ├── test_contracts.py
+│   ├── test_opsd.py
+│   ├── test_prepare.py
 │   └── test_validation.py
 ├── .gitignore
 ├── .python-version
@@ -116,11 +143,17 @@ PeakWindow/
   `target_timestamps()` and `select_history()`. It contains no I/O.
 - `src/peakwindow/validation.py` holds the pure data-quality validator and the
   JSON-serializable `QualityReport`.
-- `src/peakwindow/csv_adapter.py` reads the canonical fixture schema as raw text. It is
-  not an OPSD parser.
+- `src/peakwindow/audit.py` adds coverage auditing on top of validation: observed span,
+  missing runs, yearly coverage and suspicious changes.
+- `src/peakwindow/csv_adapter.py` reads the canonical fixture schema as raw text.
+- `src/peakwindow/opsd.py` defines the OPSD source and maps its Czech columns. It also
+  checks UTC vs CET/CEST alignment.
+- `src/peakwindow/acquisition.py` handles verified downloads and provenance manifests.
+- `src/peakwindow/prepare.py` is the offline pipeline behind `prepare-opsd`.
 - `src/peakwindow/cli.py` and `__main__.py` provide the command-line front end:
   presentation, output files and exit codes.
-- `tests/` contains the boundary, quality-rule and CLI tests.
+- `tests/` contains boundary, quality, audit, acquisition and CLI tests. They use only
+  synthetic data and `file://` URLs.
 - `data/fixtures/` holds the synthetic fixture and its generation rule.
 - `docs/` holds the methodology, architecture, data provenance, roadmap and the
   original project brief.
@@ -149,12 +182,15 @@ Details: [docs/methodology.md](docs/methodology.md).
   240 deterministic hourly rows (2019-03-25 to 2019-04-03 UTC) and contains no real
   measurements. Its generation rule is documented in
   [data/fixtures/README.md](data/fixtures/README.md) and checked by a test.
-- **Intended source (not bundled):** Open Power System Data, Time series release
-  2020-10-06, DOI [10.25832/time_series/2020-10-06](https://doi.org/10.25832/time_series/2020-10-06),
-  file `time_series_60min_singleindex.csv`, fields `utc_timestamp` and
-  `CZ_load_actual_entsoe_transparency`. These names were verified against the release
-  metadata. The actual coverage of the Czech series has **not** been inspected yet.
-  See [docs/data_sources.md](docs/data_sources.md).
+- **Real source (downloaded, never committed):** Open Power System Data, Time series
+  release 2020-10-06, DOI [10.25832/time_series/2020-10-06](https://doi.org/10.25832/time_series/2020-10-06),
+  file `time_series_60min_singleindex.csv`, columns `utc_timestamp` and
+  `CZ_load_actual_entsoe_transparency`.
+- **Audited Czech coverage:** `2015-01-01T01:00Z` to `2020-09-30T22:00Z` (50,398
+  hours). 107 hours are missing, in two runs (104 h in November 2016 and 3 h in
+  November 2017). UTC and CET/CEST labels agree on every row. A few isolated spikes
+  are documented and kept unchanged. Details are in
+  [docs/data_sources.md](docs/data_sources.md).
 - **Attribution boundary:** the MIT license below covers PeakWindow's code and docs
   only. OPSD and ENTSO-E data keep their own terms.
 - **Generated files** (`artifacts/`, `experiments/`, `data/raw/`, `data/processed/`,
@@ -162,7 +198,7 @@ Details: [docs/methodology.md](docs/methodology.md).
 
 ## Roadmap
 
-1. Ingestion and quality audit of the real OPSD Czech series.
+1. ~~Ingestion and quality audit of the real OPSD Czech series.~~ Done.
 2. Leakage-safe features and daily and weekly seasonal naive baselines.
 3. Ridge and chronological evaluation (MAE and RMSE in MW, normalized MAE).
 4. Calibrated prediction intervals and rolling-origin backtests.
@@ -176,8 +212,10 @@ not current features.
 ## Limitations
 
 - No trained models, no forecasts and no measured predictive accuracy.
-- No real data has been downloaded or inspected. The source's coverage, timestamp
-  formatting and license terms are unverified.
+- OPSD states no data license (ENTSO-E terms apply), so each user downloads the
+  data and this repository never redistributes it.
+- The final holdout period (2020) includes the COVID-19 demand drop, which made April
+  and May about 11–13% lower than in 2019.
 - No live feed. This is a historical reconstruction laboratory, and its output must
   never be read as operational guidance.
 - Publication delays of source measurements have not been audited.

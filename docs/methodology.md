@@ -1,8 +1,9 @@
 # Methodology
 
 > Everything under "Evaluation design" is a **design commitment** for later phases.
-> No model has been trained and no predictive result exists. Phase 0 implements only
-> the time conventions, the data-quality rules and the history-selection boundary.
+> No model has been trained and no predictive result exists. Phases 0 and 1 implement
+> the time conventions, the data-quality rules, the history-selection boundary and the
+> audited real data series.
 
 ## Time conventions (implemented in Phase 0)
 
@@ -12,8 +13,9 @@
   local days.
 - **Interval meaning:** an hourly timestamp labels the **start** of its hour
   (`10:00Z` covers 10:00 to 11:00 UTC). OPSD's metadata describes `utc_timestamp`
-  as "Start of timeperiod in Coordinated Universal Time", which is consistent, but the
-  alignment must still be checked against real values during ingestion (Phase 1).
+  as "Start of timeperiod in Coordinated Universal Time". In Phase 1, every one of the
+  50,401 rows matched its `cet_cest_timestamp` label, with the correct Europe/Prague
+  offset across all daylight-saving changes (see [data_sources.md](data_sources.md)).
 - **Offsets:** offset-aware inputs are normalized to UTC (`01:00+01:00` → `00:00Z`).
   Naive timestamps are **rejected**, never assigned a guessed timezone.
 - **Units:** load is in megawatts (MW). OPSD labels the Czech field "Total load ... in
@@ -27,8 +29,8 @@
 ### Availability assumption (unresolved)
 
 An event time before the origin does not by itself prove that the value had been
-**published** before the forecast was issued. Phase 0 and the initial historical
-reconstruction assume **immediate availability** of all prior observations. Real
+**published** before the forecast was issued. The initial historical
+reconstruction assumes **immediate availability** of all prior observations. Real
 ENTSO-E publication delays are an explicit open limitation until they are audited. If delays
 matter, the eligibility rule becomes `timestamp_utc < origin − publication_lag`.
 
@@ -66,12 +68,39 @@ are never shuffled randomly. Each period has one role:
 | Calibration | Fit interval widths on out-of-sample residuals | Conformal calibration only |
 | Final holdout | Report final metrics once | Evaluation only, **never tuning** |
 
-**Split dates are not fixed yet.** They will be chosen after the coverage and
-missingness of the real `CZ_load_actual_entsoe_transparency` series have been audited
-(Phase 1). The brief's example (train 2015–2018, tune 2019, hold out 2020) is a
-starting hypothesis only. The calibration window comes before the final holdout and does not
-overlap the data used to fit the model it calibrates. Rolling-origin backtests may
-follow. They refit using only the data available at each origin.
+### Proposed split (from the Phase 1 audit)
+
+The audited Czech series has load from `2015-01-01T01:00Z` to `2020-09-30T22:00Z`.
+This bounds the usable forecast origins:
+
+- **First origin: 2015-01-09.** The weekly naive baseline needs `y(origin − 168 h)`,
+  and the first value is at 2015-01-01 01:00Z.
+- **Last origin: 2020-09-29.** The origin 2020-09-30 would need a target at 23:00Z,
+  which has no value.
+
+| Period | Origins (00:00 UTC) | Role |
+|---|---|---|
+| Training | 2015-01-09 … 2018-12-31 | Fitting |
+| Validation | 2019-01-01 … 2019-06-30 | Model and feature selection |
+| Calibration | 2019-07-01 … 2019-12-31 | Interval calibration only |
+| Final holdout | 2020-01-01 … 2020-09-29 (273 origins) | Final evaluation only, once |
+
+This is a **proposal**. It is frozen at the start of Phase 2, before any baseline is
+scored, and is not changed after seeing holdout results. The calibration window
+follows validation and never overlaps the data used to fit the model it calibrates.
+Rolling-origin backtests may follow. They refit using only the data available at
+each origin.
+
+**Known holdout caveat (measured):** monthly mean load in April and May 2020 was
+11.3% and 12.5% below the same months of 2019, consistent with COVID-19 restrictions.
+The holdout is therefore atypical. Results will be reported for the whole holdout
+and, as a pre-declared sensitivity view, separately for 2020-04-01 … 2020-06-30
+versus the remaining holdout months. Neither view replaces the other.
+
+**Origins touching missing data** (the 104-hour run in November 2016 and the 3-hour
+run in November 2017) are excluded under the data-gap policy below. This applies to
+origins whose targets *or* required inputs fall in a missing hour. The exact list
+is computed by code, not by hand.
 
 ### Models, in order
 
@@ -103,3 +132,8 @@ the calibration window. The final holdout reports **empirical coverage** and
 
 Every origin must produce 24 aligned targets. Otherwise the origin is excluded with
 a documented data-gap exception. Gaps are never filled silently.
+
+The Phase 1 audit also found a few isolated spikes, for example 2016-06-24 03:00Z
+(+2,661 MW, then back down). They are kept unchanged in the processed series. Phase 2
+must decide, and document before scoring, whether such hours are scored as they are,
+excluded from scoring, or reported both ways.

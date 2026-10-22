@@ -14,7 +14,7 @@ Time semantics (see docs/methodology.md):
   the origin itself is a target.
 
 Event time before the origin does not prove that a value was *published* before
-issuance. Phase 0 assumes immediate availability of prior observations; real
+issuance. PeakWindow assumes immediate availability of prior observations; real
 publication delays are an unresolved limitation until audited.
 """
 

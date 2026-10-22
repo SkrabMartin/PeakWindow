@@ -1,46 +1,59 @@
-# Architecture (Phase 0)
+# Architecture
 
-Phase 0 is a deliberately small package. Every module below exists and is tested;
-nothing is a placeholder for future work.
+Every module below exists and is tested. Nothing is a placeholder for future work.
 
 ## Dependency direction
 
 ```text
-cli.py ──► csv_adapter.py          (filesystem: read CSV as raw text)
-   │
-   └─────► validation.py ──► contracts.py
+cli.py
+ ├─ validate-data ──► csv_adapter.py, validation.py
+ ├─ fetch-opsd ─────► acquisition.py (the only network code), opsd.py (source definition)
+ └─ prepare-opsd ───► prepare.py
+                        ├─► acquisition.py   verify the cached file, read its manifest
+                        ├─► opsd.py          map columns, check UTC vs CET/CEST alignment
+                        └─► audit.py ──► validation.py ──► contracts.py
 
-tests/ ── call contracts, validation and csv_adapter functions directly;
-          test_cli.py also drives main(), `python -m peakwindow` and the console script
+tests/ ── call every module directly; test_cli.py and test_prepare.py also drive main().
+          No test uses the network: downloads are tested with file:// URLs.
 ```
 
-- **`contracts.py`**: canonical column names (`timestamp_utc`, `load_mw`), the
-  24-hour horizon, `ForecastRequest` (00:00 UTC origin, fixed horizon),
-  `target_timestamps()` and `select_history()`. No I/O. Depends only on pandas.
-- **`validation.py`**: `validate_hourly_frame()` → `QualityReport`. A pure function
-  of a DataFrame: no filesystem access, no printing, and the input is never modified.
-  Serialization (`to_dict`, `to_json`) produces standard JSON only (`allow_nan=False`).
-- **`csv_adapter.py`**: `read_canonical_csv()` reads the canonical fixture schema
-  with every cell kept as text, and turns structural problems (missing file, empty
-  file, malformed CSV, bad encoding) into `CsvReadError`. It is **not** an OPSD parser.
-- **`cli.py`**: argparse front end. It owns all presentation: status lines on
-  stderr, JSON on stdout or to `--output`, and exit codes (0 pass, 1 quality
-  failure, 2 usage or I/O error).
+- **`contracts.py`**: canonical columns (`timestamp_utc`, `load_mw`), the 24-hour
+  horizon, `ForecastRequest`, `target_timestamps()` and `select_history()`. No I/O.
+- **`validation.py`**: `validate_hourly_frame()` → `QualityReport`. It is pure: no
+  filesystem, no printing, and the input is never modified.
+- **`audit.py`**: `audit_load_series()` → `AuditReport` plus an optional typed
+  series. It adds the observed span, missing-load runs, yearly coverage, descriptive
+  statistics and the largest hourly changes. It is pure, and nothing is filled or removed.
+- **`csv_adapter.py`**: reads the canonical fixture schema as raw text.
+- **`opsd.py`**: the OPSD release definition (URL, declared size and SHA-256, citation,
+  column names), `read_czech_load()`, which maps the two source columns to the
+  canonical schema as raw text, and `check_alignment()` (UTC vs CET/CEST).
+- **`acquisition.py`**: `fetch()` downloads to a `.part` file, verifies the size and
+  SHA-256, moves the file into place and writes the provenance manifest.
+  `verify_cached()` re-checks a cached copy. The standard library's `urllib` is the
+  only network code in the package.
+- **`prepare.py`**: the offline pipeline behind `prepare-opsd`. It verifies the cache,
+  then reads, aligns, audits, and writes the Parquet series and the JSON audit record.
+- **`cli.py`**: argparse front end. It owns all terminal output and exit codes
+  (0 success, 1 data failure, 2 usage, I/O, network or checksum error).
 - **`__main__.py`** supports `python -m peakwindow`. **`__init__.py`** exposes
   `__version__` only. Importing the package has no side effects.
 
 ## Design rules
 
-1. Core logic (contracts, validation) never touches the filesystem or the terminal,
-   so later phases (ingestion, dashboard) can reuse it unchanged.
-2. Validation measures and reports. It never repairs, sorts, deduplicates, fills or
-   imputes data.
-3. Neither imports nor `--help` download, write, train or start anything.
-4. Production dependencies are pandas only. CLI, dataclasses, JSON and paths use
-   the standard library.
+1. Core logic (contracts, validation, audit) never touches the filesystem or the
+   terminal.
+2. Validation and audit measure and report. They never repair, sort, deduplicate,
+   fill, interpolate or remove data.
+3. Only `fetch-opsd` uses the network, and only when run explicitly. Imports and
+   `--help` download, write and start nothing.
+4. Downloads and derived files are verified by SHA-256 and recorded in manifests,
+   and they live in git-ignored directories.
+5. Runtime dependencies are pandas, pyarrow (Parquet) and tzdata (time zones on
+   Windows). Everything else uses the standard library.
 
 ## Planned growth (not implemented)
 
-Later phases are expected to add modules for OPSD ingestion, features, baselines,
-models, uncertainty, backtesting and reporting, plus a dashboard. They will depend
-on `contracts.py` rather than redefine time semantics. See [roadmap.md](roadmap.md).
+Later phases will add features, baselines, models, uncertainty, backtesting,
+reporting and a dashboard. They read the processed Parquet series and depend on
+`contracts.py` for time semantics. See [roadmap.md](roadmap.md).

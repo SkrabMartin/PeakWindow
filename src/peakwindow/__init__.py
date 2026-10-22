@@ -1,4 +1,4 @@
-"""PeakWindow: historical Czech electricity-demand forecasting laboratory (Phase 0)."""
+"""PeakWindow: historical Czech electricity-demand forecasting laboratory."""
 
 from importlib.metadata import PackageNotFoundError, version
 
