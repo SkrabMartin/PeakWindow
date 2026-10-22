@@ -7,10 +7,11 @@ demand**, with meaningful baselines, strictly chronological evaluation, calibrat
 uncertainty and an interactive historical dashboard. It runs locally on a CPU with
 no paid services.
 
-> **Status: work in progress (Phase 3).** A Ridge model has been selected on the
-> validation period. The final evaluation protocol is committed, and the 2020 holdout
-> result is reported only by the final evaluation. PeakWindow is a historical
-> research laboratory, not a live forecasting feed and not a grid-control system.
+> **Status: work in progress. Phase 3 (Ridge model and final evaluation) is done.**
+> The point forecasts have been evaluated once on the 2020 holdout, following a
+> protocol committed before the holdout was opened. Prediction intervals, backtests
+> and the dashboard are still to come. PeakWindow is a historical research
+> laboratory, not a live forecasting feed and not a grid-control system.
 
 ## What works now vs. later
 
@@ -252,6 +253,22 @@ Details: [docs/methodology.md](docs/methodology.md).
 - **Generated files** (`artifacts/`, `experiments/`, `data/raw/`, `data/processed/`,
   `*.parquet`) are git-ignored and never committed.
 
+## Final holdout results (2020-01-01 … 2020-09-29)
+
+Measured **once** on 273 origins × 24 hours, with Ridge refitted on train + validation.
+The [protocol](docs/methodology.md#final-evaluation-protocol-pre-registered-before-opening-the-holdout)
+was committed (`ec20425`) before the holdout was opened.
+
+| Model | MAE (MW) | RMSE (MW) | nMAE | Relative MAE |
+|---|---|---|---|---|
+| Seasonal naive, daily (`t − 24 h`) | 446.6 | 678.7 | 6.26 % | 1.549 |
+| Seasonal naive, weekly (`t − 168 h`) | 288.3 | 486.6 | 4.04 % | 1.000 |
+| **Ridge, per horizon** | **133.7** | **179.7** | **1.87 %** | **0.464** |
+
+Ridge beats the weekly naive both inside the COVID-19 window (April–June 2020:
+140.3 vs 284.7 MW) and outside it (130.3 vs 290.1 MW). Public holidays remain its
+largest errors.
+
 ## Validation results (2019-01-01 … 2019-06-30)
 
 Measured on 181 origins × 24 hours. This is the model-selection period, **not** the
@@ -272,8 +289,7 @@ expected. Details, ablations and the pre-registered final protocol are in
 
 1. ~~Ingestion and quality audit of the real OPSD Czech series.~~ Done.
 2. ~~Leakage-safe features and daily and weekly seasonal naive baselines.~~ Done.
-3. Ridge and chronological evaluation: the model is selected, and the final holdout
-   evaluation follows the pre-registered protocol.
+3. ~~Ridge and chronological evaluation with a single, pre-registered holdout run.~~ Done.
 4. Calibrated prediction intervals and rolling-origin backtests.
 5. Historical dashboard and optional packaging.
 
@@ -289,7 +305,9 @@ not current features.
 - OPSD states no data license (ENTSO-E terms apply), so each user downloads the
   data and this repository never redistributes it.
 - The final holdout period (2020) includes the COVID-19 demand drop, which made April
-  and May about 11–13% lower than in 2019.
+  and May about 11–13% lower than in 2019. The results are reported with and without it.
+- There is one test period (nine months of 2020) for one country. Rolling-origin
+  backtests are planned for Phase 4.
 - No live feed. This is a historical reconstruction laboratory, and its output must
   never be read as operational guidance.
 - Publication delays of source measurements have not been audited.

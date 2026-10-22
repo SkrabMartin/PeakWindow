@@ -256,3 +256,43 @@ first run. It will not be changed after the results are seen.
    remaining holdout origins.
 4. No re-tuning, feature changes or re-selection follow from the holdout. If Ridge
    does not beat the weekly naive there, that result is reported as it is.
+
+## Final holdout results (Phase 3, measured once, 2026-10-22)
+
+The holdout was run once with `peakwindow evaluate-holdout --confirm`, following the
+protocol above. Ridge was refitted on 1,620 origins (train + validation). All 273
+holdout origins (6,552 target hours) were scored, with no data-gap exceptions.
+
+| Holdout 2020-01-01 … 2020-09-29 | MAE | RMSE | nMAE | Relative MAE | Abs. error p50 / p90 / p99 |
+|---|---|---|---|---|---|
+| Daily naive | 446.6 | 678.7 | 6.26 % | 1.549 | 238 / 1,297 / 2,103 |
+| Weekly naive | 288.3 | 486.6 | 4.04 % | 1.000 | 160 / 681 / 1,996 |
+| **Ridge** | **133.7** | **179.7** | **1.87 %** | **0.464** | **102 / 290 / 537** |
+
+**Pre-declared sensitivity view:**
+
+| | Weekly naive MAE | Ridge MAE | Ridge nMAE | Ridge relative MAE |
+|---|---|---|---|---|
+| 2020-04-01 … 2020-06-30 (COVID-19 drop, 91 origins) | 284.7 | 140.3 | 2.17 % | 0.493 |
+| Other holdout origins (182) | 290.1 | 130.3 | 1.75 % | 0.449 |
+
+Reading the result honestly:
+
+- **Ridge generalized.** Its holdout MAE (133.7 MW) matches its validation MAE
+  (134.2 MW). It beats the weekly naive in both sensitivity views, so the result
+  does not depend on the COVID-19 period.
+- **The margin over the weekly naive is smaller than on validation:** relative MAE
+  is 0.464 on the holdout and 0.353 on validation. The weekly naive happened to do
+  better in 2020 (288 MW, against 380 MW on validation). Absolute Ridge errors were
+  stable.
+- **The COVID-19 window is harder for Ridge** (nMAE 2.17 % against 1.75 %) but not
+  broken. Lag features adapt to the lower level within days.
+- **Holidays remain the weak spot.** Ridge MAE is 246 MW on holiday hours and 139 MW on
+  weekdays. Its worst origin is 2020-07-05, the first of two consecutive holidays,
+  which fell on a Sunday. The second worst is 2020-01-02, the day after New Year.
+- Error by horizon runs from 36 MW at h = 0 to about 180 MW around midday, then down
+  to about 105 MW late in the day.
+
+What this result is **not**: it is not a live forecast. It assumes immediate
+availability of past measurements, and it has no prediction interval yet (Phase 4).
+It also covers a single country and a single nine-month test period.
