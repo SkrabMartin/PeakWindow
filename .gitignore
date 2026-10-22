@@ -1,0 +1,20 @@
+# Python / tooling caches
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Generated outputs and future data caches (never committed)
+artifacts/
+experiments/
+data/raw/
+data/processed/
+*.parquet
+
+# Secrets
+.env
+.env.*
