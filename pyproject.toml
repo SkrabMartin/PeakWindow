@@ -1,7 +1,7 @@
 [project]
 name = "peakwindow"
-version = "0.2.0"
-description = "Electricity demand forecasting laboratory for historical Czech national load (Phase 1: data ingestion and audit)."
+version = "0.3.0"
+description = "Electricity demand forecasting laboratory for historical Czech national load (Phase 2: features and baselines)."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -50,3 +50,4 @@ warn_unreachable = true
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config"]
 xfail_strict = true
+filterwarnings = ["error"]

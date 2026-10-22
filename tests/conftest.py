@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -10,7 +11,8 @@ import pandas as pd
 import pytest
 
 from peakwindow import opsd
-from peakwindow.acquisition import SourceFile
+from peakwindow.acquisition import SourceFile, sha256_of
+from peakwindow.prepare import output_paths
 
 OpsdWriter = Callable[..., Path]
 
@@ -59,3 +61,20 @@ def source_for(path: Path) -> SourceFile:
         sha256=hashlib.sha256(data).hexdigest(),
         size_bytes=len(data),
     )
+
+
+def hourly_series(start_utc: str, end_utc: str, value: Callable[[int], float]) -> pd.DataFrame:
+    """A typed canonical series with ``load_mw = value(i)`` for the i-th hour (synthetic)."""
+    stamps = pd.date_range(start_utc, end_utc, freq="h")
+    return pd.DataFrame(
+        {"timestamp_utc": stamps, "load_mw": [float(value(i)) for i in range(len(stamps))]}
+    )
+
+
+def write_processed(series: pd.DataFrame, processed_dir: Path) -> Path:
+    """Write ``series`` and a minimal audit record the way ``prepare-opsd`` does."""
+    parquet, record = output_paths(processed_dir)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    series.to_parquet(parquet, index=False)
+    record.write_text(json.dumps({"processed": {"sha256": sha256_of(parquet)}}), encoding="utf-8")
+    return parquet

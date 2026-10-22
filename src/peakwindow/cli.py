@@ -3,24 +3,29 @@
 Exit status:
 
 * 0 -- success (``validate-data``: every quality check passed;
-  ``prepare-opsd``: processed series written)
+  ``prepare-opsd``: processed series written; ``evaluate-baselines``: record written)
 * 1 -- the data was read but failed (``validate-data``: a quality check;
   ``prepare-opsd``: the series could not be processed or UTC/local alignment failed)
-* 2 -- usage error, network/download failure, checksum mismatch, or a file that
-  could not be read or written
+* 2 -- usage error, network/download failure, checksum mismatch, a locked holdout,
+  or a file that could not be read or written
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
-from peakwindow import __version__, opsd
+from peakwindow import __version__, baselines, opsd
 from peakwindow.acquisition import AcquisitionError, ProgressCallback, fetch
 from peakwindow.csv_adapter import CsvReadError, read_canonical_csv
-from peakwindow.prepare import PreparationError, prepare_opsd
+from peakwindow.evaluation import HoldoutLockedError, evaluate_baselines
+from peakwindow.features import FEATURE_COLUMNS
+from peakwindow.prepare import PreparationError, load_processed, prepare_opsd
+from peakwindow.splits import Period
 from peakwindow.validation import validate_hourly_frame
 
 EXIT_OK = 0
@@ -33,8 +38,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="peakwindow",
         description=(
             "PeakWindow: historical Czech electricity-demand forecasting laboratory. "
-            "Provides OPSD data acquisition, offline preparation and data-quality audits; "
-            "no forecasts are produced yet."
+            "Provides OPSD data acquisition, offline preparation, data-quality audits and "
+            "seasonal naive baseline evaluation; no learned models yet."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -95,6 +100,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="where to write outputs (default: <data-dir>/processed)",
     )
     prepare_parser.set_defaults(handler=_prepare_opsd)
+
+    evaluate_parser = commands.add_parser(
+        "evaluate-baselines",
+        help="score the daily and weekly seasonal naive baselines on one split period",
+        description=(
+            "Score the seasonal naive baselines on the origins of one period of the frozen "
+            "split (split-v1) and write a JSON experiment record. The final holdout is locked."
+        ),
+    )
+    evaluate_parser.add_argument(
+        "--period",
+        required=True,
+        choices=[period.value for period in Period if period is not Period.HOLDOUT],
+        help="split period to evaluate (the holdout is locked)",
+    )
+    evaluate_parser.add_argument("--data-dir", type=Path, default=Path("data"), help=data_dir_help)
+    evaluate_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("experiments"),
+        help="where to write the experiment record (default: ./experiments)",
+    )
+    evaluate_parser.set_defaults(handler=_evaluate_baselines)
     return parser
 
 
@@ -170,6 +198,59 @@ def _prepare_opsd(args: argparse.Namespace) -> int:
         print("prepare-opsd FAILED: processed series not written", file=sys.stderr)
         return EXIT_QUALITY_FAILURE
     print(f"processed series written to {result.processed_path}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _evaluate_baselines(args: argparse.Namespace) -> int:
+    period = Period(args.period)
+    processed_dir: Path = args.data_dir / "processed"
+    try:
+        series, data_sha256 = load_processed(processed_dir)
+        result = evaluate_baselines(series, period)
+    except (PreparationError, HoldoutLockedError) as exc:
+        print(f"peakwindow: error: {exc}", file=sys.stderr)
+        return EXIT_USAGE_OR_IO_ERROR
+
+    record = {
+        "schema_version": "1",
+        "experiment": f"baselines_{period.value}",
+        "generated_at_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "peakwindow_version": __version__,
+        "data": {"processed_sha256": data_sha256, "source_doi": opsd.DOI_URL},
+        "config": {
+            "models": baselines.BASELINES,
+            "reference_model": baselines.REFERENCE_BASELINE,
+            "feature_columns": list(FEATURE_COLUMNS),
+            "spike_policy": "scored as published; no outlier removal",
+        },
+        "evaluation": result.to_dict(),
+    }
+    output_path: Path = args.output_dir / f"baselines_{period.value}.json"
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(record, indent=2, allow_nan=False, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(
+            f"peakwindow: error: cannot write {output_path}: {exc.strerror or exc}", file=sys.stderr
+        )
+        return EXIT_USAGE_OR_IO_ERROR
+
+    print(
+        f"evaluate-baselines [{result.split_version} / {period.value}]: "
+        f"{result.origins_evaluated} of {result.origins_in_period} origins evaluated, "
+        f"{len(result.exceptions)} data-gap exception(s)",
+        file=sys.stderr,
+    )
+    for name, metrics in result.models.items():
+        print(
+            f"  {name}: MAE {metrics.mae:.1f} MW, RMSE {metrics.rmse:.1f} MW, "
+            f"nMAE {metrics.nmae_pct:.2f} %, relative MAE {metrics.relative_mae:.3f}",
+            file=sys.stderr,
+        )
+    print(f"experiment record written to {output_path}", file=sys.stderr)
     return EXIT_OK
 
 

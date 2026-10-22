@@ -1,9 +1,9 @@
 # Methodology
 
-> Everything under "Evaluation design" is a **design commitment** for later phases.
-> No model has been trained and no predictive result exists. Phases 0 and 1 implement
-> the time conventions, the data-quality rules, the history-selection boundary and the
-> audited real data series.
+> Phases 0–2 implement the time conventions, data-quality rules, the audited real
+> series, leakage-safe features, the frozen split and two seasonal naive baselines.
+> **No learned model exists yet.** The only measured results are baseline errors on
+> the training and validation periods; the final holdout has not been evaluated.
 
 ## Time conventions (implemented in Phase 0)
 
@@ -68,7 +68,7 @@ are never shuffled randomly. Each period has one role:
 | Calibration | Fit interval widths on out-of-sample residuals | Conformal calibration only |
 | Final holdout | Report final metrics once | Evaluation only, **never tuning** |
 
-### Proposed split (from the Phase 1 audit)
+### Frozen split (`split-v1`, frozen 2026-10-22)
 
 The audited Czech series has load from `2015-01-01T01:00Z` to `2020-09-30T22:00Z`.
 This bounds the usable forecast origins:
@@ -85,8 +85,10 @@ This bounds the usable forecast origins:
 | Calibration | 2019-07-01 … 2019-12-31 | Interval calibration only |
 | Final holdout | 2020-01-01 … 2020-09-29 (273 origins) | Final evaluation only, once |
 
-This is a **proposal**. It is frozen at the start of Phase 2, before any baseline is
-scored, and is not changed after seeing holdout results. The calibration window
+The split was frozen at the start of Phase 2, before any baseline was scored, and is
+defined in code (`src/peakwindow/splits.py`). It must not be changed after seeing
+results. The holdout is **locked in code**: `evaluate_baselines` refuses it unless
+explicitly unlocked, and no CLI command unlocks it before the final evaluation phase. The calibration window
 follows validation and never overlaps the data used to fit the model it calibrates.
 Rolling-origin backtests may follow. They refit using only the data available at
 each origin.
@@ -134,6 +136,61 @@ Every origin must produce 24 aligned targets. Otherwise the origin is excluded w
 a documented data-gap exception. Gaps are never filled silently.
 
 The Phase 1 audit also found a few isolated spikes, for example 2016-06-24 03:00Z
-(+2,661 MW, then back down). They are kept unchanged in the processed series. Phase 2
-must decide, and document before scoring, whether such hours are scored as they are,
-excluded from scoring, or reported both ways.
+(+2,661 MW, then back down). **Decision (Phase 2, before scoring): they are scored
+as published.** Any removal rule would be chosen after looking at the data, which is
+exactly the kind of freedom that can bend results. The spikes stay listed in the audit
+record, and they also enter lag features unchanged.
+
+## Features (implemented in Phase 2)
+
+`build_features()` returns 24 rows per origin. It restricts the series with
+`select_history()` first, so load-derived values can only come from hours strictly
+before the origin.
+
+| Feature | Definition |
+|---|---|
+| `local_hour`, `local_weekday`, `month`, `is_weekend` | Calendar of the **target** in Europe/Prague time (known at issuance) |
+| `lag_24h_mw` | Load at `target − 24 h` |
+| `lag_168h_mw` | Load at `target − 168 h` |
+| `last_load_mw` | Load at `origin − 1 h` |
+| `prev_24h_mean_mw` | Mean over `origin − 24 h … origin − 1 h`; missing if any hour is missing |
+
+**Leakage test.** For three origins (an ordinary day and both 2019 DST days), the
+features must be identical after each of these changes: the exact-origin value, the
+last-target value, a value beyond the horizon, all future values scrambled, all
+future rows removed, or all future values set to NaN. The same test is shown to fail
+for a deliberately leaky builder, and it failed when a real leak was briefly injected
+into the builder (lag 23 h without the history restriction).
+
+**Exclusions.** An origin is scored only if all 24 targets **and** all features are
+present, so every model is compared on exactly the same target hours.
+
+## Baseline results (Phase 2, measured)
+
+Measured with `peakwindow evaluate-baselines` on the audited OPSD series. These are
+training and validation results, **not** the final holdout.
+
+| Period | Origins scored | Model | MAE (MW) | RMSE (MW) | nMAE | Relative MAE |
+|---|---|---|---|---|---|---|
+| Training (2015-01-09 … 2018-12-31) | 1,439 of 1,453 | Daily naive | 451.1 | 691.2 | 6.05 % | 1.378 |
+| | | **Weekly naive** | **327.4** | **546.8** | **4.39 %** | 1.000 |
+| Validation (2019-01-01 … 2019-06-30) | 181 of 181 | Daily naive | 510.1 | 754.9 | 6.54 % | 1.342 |
+| | | **Weekly naive** | **380.2** | **622.9** | **4.88 %** | 1.000 |
+
+The 14 training exceptions are the origins touching the two missing runs in
+November 2016 and November 2017. They were found by code and are listed in the experiment record.
+
+Observations on validation:
+
+- **The weekly naive is the reference to beat.** Its MAE is about 25% lower than the
+  daily naive's.
+- The daily naive fails on day-type changes. Its weekend MAE is 687 MW, against
+  439 MW on weekdays, because Saturday copies Friday and Monday copies Sunday.
+- Both baselines are worst around **public holidays**. The daily naive's worst days
+  include 2019-01-02 and 2019-04-23, and the weekly naive's include 2019-01-07/08,
+  2019-04-22 and 2019-04-29, each comparing with or following a holiday week.
+  Christmas dominates the training-period worst days. A Czech public-holiday
+  feature is therefore the first candidate for Phase 3.
+- Error grows within the horizon toward midday. For the weekly naive, MAE is 314 MW at
+  h = 0 and 433 MW at h = 12. The error is not monotonic in `h`, because the
+  horizon is tied to time of day.

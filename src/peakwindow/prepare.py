@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from peakwindow import __version__, opsd
 from peakwindow.acquisition import AcquisitionError, read_manifest, sha256_of, verify_cached
 from peakwindow.audit import AuditReport, audit_load_series
@@ -128,3 +130,35 @@ def prepare_opsd(data_dir: Path, output_dir: Path) -> PreparationResult:
         record_path=record_path,
         processed_path=parquet_path if processed is not None else None,
     )
+
+
+def load_processed(output_dir: Path) -> tuple[pd.DataFrame, str]:
+    """Load the processed series written by ``prepare_opsd``; return it and its SHA-256.
+
+    The Parquet file must match the SHA-256 in its audit record and have the
+    canonical typed schema, so later phases never score on an unverified file.
+    """
+    parquet_path, record_path = output_paths(output_dir)
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise PreparationError(
+            f"no audit record at {record_path}. Run `peakwindow prepare-opsd` first."
+        ) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PreparationError(f"cannot read audit record {record_path}: {exc}") from exc
+    processed = record.get("processed")
+    if not processed:
+        raise PreparationError(f"{record_path} records no processed series")
+    if not parquet_path.is_file():
+        raise PreparationError(f"processed series not found: {parquet_path}")
+    digest = sha256_of(parquet_path)
+    if digest != processed.get("sha256"):
+        raise PreparationError(
+            f"{parquet_path} does not match the SHA-256 in {record_path.name}; "
+            "re-run `peakwindow prepare-opsd`"
+        )
+    series = pd.read_parquet(parquet_path)
+    if list(series.columns) != [TIMESTAMP_COLUMN, LOAD_COLUMN]:
+        raise PreparationError(f"unexpected columns in {parquet_path}: {list(series.columns)}")
+    return series, digest

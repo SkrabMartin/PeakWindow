@@ -8,10 +8,15 @@ Every module below exists and is tested. Nothing is a placeholder for future wor
 cli.py
  ├─ validate-data ──► csv_adapter.py, validation.py
  ├─ fetch-opsd ─────► acquisition.py (the only network code), opsd.py (source definition)
- └─ prepare-opsd ───► prepare.py
-                        ├─► acquisition.py   verify the cached file, read its manifest
-                        ├─► opsd.py          map columns, check UTC vs CET/CEST alignment
-                        └─► audit.py ──► validation.py ──► contracts.py
+ ├─ prepare-opsd ───► prepare.py
+ │                      ├─► acquisition.py   verify the cached file, read its manifest
+ │                      ├─► opsd.py          map columns, check UTC vs CET/CEST alignment
+ │                      └─► audit.py ──► validation.py ──► contracts.py
+ └─ evaluate-baselines ─► prepare.load_processed (SHA-256 check)
+                          └─► evaluation.py
+                                ├─► splits.py      frozen origins, holdout lock
+                                ├─► features.py ─► contracts.select_history
+                                └─► baselines.py
 
 tests/ ── call every module directly; test_cli.py and test_prepare.py also drive main().
           No test uses the network: downloads are tested with file:// URLs.
@@ -34,6 +39,16 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
   only network code in the package.
 - **`prepare.py`**: the offline pipeline behind `prepare-opsd`. It verifies the cache,
   then reads, aligns, audits, and writes the Parquet series and the JSON audit record.
+  `load_processed()` reads the series back only if its SHA-256 matches that record.
+- **`splits.py`**: the frozen split `split-v1`, with origin dates per period.
+- **`features.py`**: `build_features()` returns 24 rows per origin: the Prague
+  calendar of each target plus lag features. It applies `select_history()` first,
+  so it cannot see the origin or anything later.
+- **`baselines.py`**: the daily and weekly seasonal naive, read from lag features.
+- **`evaluation.py`**: `evaluate_baselines()`. It scores every model on the same
+  origins, records data-gap exceptions, computes metrics and enforces the holdout lock.
+  `actual_values()` is the only code that reads target values, and it is used only
+  for scoring.
 - **`cli.py`**: argparse front end. It owns all terminal output and exit codes
   (0 success, 1 data failure, 2 usage, I/O, network or checksum error).
 - **`__main__.py`** supports `python -m peakwindow`. **`__init__.py`** exposes
@@ -54,6 +69,6 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
 
 ## Planned growth (not implemented)
 
-Later phases will add features, baselines, models, uncertainty, backtesting,
-reporting and a dashboard. They read the processed Parquet series and depend on
-`contracts.py` for time semantics. See [roadmap.md](roadmap.md).
+Later phases will add learned models, uncertainty, backtesting, reporting and a
+dashboard. They will reuse `features.py`, `splits.py` and `evaluation.py` rather than
+redefine them. See [roadmap.md](roadmap.md).
