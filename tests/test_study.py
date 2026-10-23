@@ -274,6 +274,10 @@ def test_cli_backtest_and_intervals(
     assert "## Rolling backtest" in report
     assert f"| 2016 | {backtest.folds[0].fit_origins} |" in report
     assert "Model selection record not found" not in report
+    figures = sorted(path.name for path in (experiments / "figures").iterdir())
+    # No final_holdout record here, and the example week needs the export-dashboard table.
+    assert figures == ["backtest_mae_by_year.svg", "interval_coverage_by_horizon.svg"]
+    assert all(f"](figures/{name})" in report for name in figures)
     assert main(["report", "--output-dir", str(tmp_path / "empty")]) == EXIT_USAGE_OR_IO_ERROR
 
 

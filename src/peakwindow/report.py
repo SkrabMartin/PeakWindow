@@ -2,16 +2,19 @@
 
 The report restates configuration, seed, split boundaries, data and model hashes,
 and the measured metrics. It computes nothing new, so it can never disagree with
-the records. Plots are in the dashboard.
+the records. Figures (see ``figures.py``) are embedded when their files were written.
 """
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
 
+from peakwindow.figures import FIGURE_ALT
 from peakwindow.splits import SPLIT_V1, SPLIT_VERSION
 
 MODEL_ORDER = ("seasonal_naive_daily", "seasonal_naive_weekly", "ridge")
+FIGURES_DIR = "figures"
 
 
 def _metrics_table(models: dict[str, Any]) -> list[str]:
@@ -29,8 +32,17 @@ def _metrics_table(models: dict[str, Any]) -> list[str]:
     return lines
 
 
-def build_report(records: dict[str, dict[str, Any]]) -> str:
-    """Render the available records; sections without a record say so."""
+def _figure(name: str, figures: Collection[str]) -> list[str]:
+    if name not in figures:
+        return []
+    return ["", f"![{FIGURE_ALT[name]}]({FIGURES_DIR}/{name})"]
+
+
+def build_report(records: dict[str, dict[str, Any]], figures: Collection[str] = ()) -> str:
+    """Render the available records; sections without a record say so.
+
+    ``figures`` names the SVG files written to ``figures/`` next to the report.
+    """
     lines = [
         "# PeakWindow experiment report",
         "",
@@ -87,6 +99,8 @@ def build_report(records: dict[str, dict[str, Any]]) -> str:
             "Remaining holdout origins:",
             "",
             *_metrics_table(result["sensitivity"]["outside_window"]),
+            *_figure("holdout_mae_by_horizon.svg", figures),
+            *_figure("holdout_example_week.svg", figures),
         ]
     else:
         lines.append("Not available.")
@@ -109,6 +123,7 @@ def build_report(records: dict[str, dict[str, Any]]) -> str:
                 f"{'n/a' if holiday is None else f'{holiday:.1%}'} | {m['below_lower']:.2%} | "
                 f"{m['above_upper']:.2%} |"
             )
+        lines += _figure("interval_coverage_by_horizon.svg", figures)
     else:
         lines.append("Not available.")
 
@@ -126,6 +141,7 @@ def build_report(records: dict[str, dict[str, Any]]) -> str:
                 f"{m['seasonal_naive_daily']['mae']:.1f} | "
                 f"{m['seasonal_naive_weekly']['mae']:.1f} | {m['ridge']['mae']:.1f} |"
             )
+        lines += _figure("backtest_mae_by_year.svg", figures)
     else:
         lines.append("Not available.")
     return "\n".join(lines) + "\n"

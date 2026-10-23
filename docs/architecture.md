@@ -21,7 +21,7 @@ cli.py
  ├─ backtest ─────────► backtest.py ─► evaluation.py, models.py
  ├─ evaluate-intervals ─► study.py ─► uncertainty.py (split conformal)
  ├─ export-dashboard ─► dashboard_data.py ─► backtest.py, study.py (predictions only)
- └─ report ───────────► report.py (reads the JSON records only)
+ └─ report ───────────► report.py, figures.py (JSON records; example week from the Parquet)
 
 dashboard/app.py (Streamlit) ─► dashboard_data.py ─► precomputed Parquet + JSON records
 
@@ -69,6 +69,9 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
   evaluated holdout MAE, interval coverage and backtest MAE exactly.
 - **`report.py`**: `build_report()` renders Markdown from the records and computes
   nothing new.
+- **`figures.py`**: `build_figures()` draws deterministic SVG line charts (one y axis,
+  the dashboard's validated palette) from the records, plus an example holdout week
+  from the stored forecasts. It has no plotting dependency.
 - **`dashboard/app.py`**: a thin Streamlit layer with Altair charts. It reads
   precomputed files only, never fits a model, and labels every page as a historical
   reconstruction. Streamlit is an optional dependency group (`dashboard`).

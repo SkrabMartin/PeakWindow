@@ -131,7 +131,7 @@ also checks that its refitted model is identical to `ridge_final_model.json`.
 # Precompute out-of-sample forecasts (backtest 2016-2019 + holdout 2020 with intervals)
 uv run --frozen peakwindow export-dashboard
 
-# Markdown report from the experiment records -> experiments/REPORT.md
+# Markdown report with SVG figures from the records -> experiments/REPORT.md, experiments/figures/
 uv run --frozen peakwindow report
 
 # Local dashboard (installs the optional dashboard group: Streamlit, Altair)
@@ -148,6 +148,13 @@ records. It never trains a model. Its tabs:
 - **Failures**: MAE by day type, the daily error timeline with holidays marked, and
   the worst days.
 - **About**: the method and its limitations.
+
+The report restates configuration, seed, split boundaries, hashes and metrics from the
+records and embeds four SVG figures: holdout MAE by target hour, interval coverage by
+target hour, backtest MAE by year, and one holdout week of actual load against the
+Ridge forecast with its 90 % interval. The figures need no plotting library and are
+byte-identical across runs. The example week needs the `export-dashboard` table and is
+left out without it.
 
 Every page carries a "historical reconstruction, not a live forecast" banner.
 
@@ -203,6 +210,7 @@ PeakWindow/
 │       ├── dashboard_data.py
 │       ├── evaluation.py
 │       ├── features.py
+│       ├── figures.py
 │       ├── holidays.py
 │       ├── models.py
 │       ├── opsd.py
@@ -222,6 +230,7 @@ PeakWindow/
 │   ├── test_dashboard.py
 │   ├── test_evaluation.py
 │   ├── test_features.py
+│   ├── test_figures.py
 │   ├── test_holidays.py
 │   ├── test_models.py
 │   ├── test_opsd.py
@@ -263,6 +272,7 @@ PeakWindow/
 - `src/peakwindow/dashboard_data.py` builds the precomputed forecast table and the
   summaries the dashboard shows. It has no Streamlit dependency.
 - `src/peakwindow/report.py` renders `REPORT.md` from the experiment records.
+- `src/peakwindow/figures.py` draws the report's SVG figures from the same records.
 - `dashboard/app.py` is the Streamlit user interface, kept thin over `dashboard_data.py`.
 - `src/peakwindow/cli.py` and `__main__.py` provide the command-line front end:
   presentation, output files and exit codes.
@@ -393,7 +403,6 @@ not current features.
 - Ridge leans heavily on the last observed hour. One bad input value shifts the whole
   day: the worst backtest day (2016-04-28, MAE about 1,900 MW) follows an isolated
   spike in the source data.
-- The report contains tables only. The charts are in the dashboard.
 - No live feed. This is a historical reconstruction laboratory, and its output must
   never be read as operational guidance.
 - Publication delays of source measurements have not been audited.

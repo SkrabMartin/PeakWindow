@@ -29,11 +29,17 @@ from peakwindow import __version__, baselines, opsd
 from peakwindow.acquisition import AcquisitionError, ProgressCallback, fetch, sha256_of
 from peakwindow.backtest import rolling_backtest
 from peakwindow.csv_adapter import CsvReadError, read_canonical_csv
-from peakwindow.dashboard_data import RECORDS, build_forecast_table, write_forecasts
+from peakwindow.dashboard_data import (
+    FORECASTS_FILE,
+    RECORDS,
+    build_forecast_table,
+    write_forecasts,
+)
 from peakwindow.evaluation import HoldoutLockedError, ModelMetrics, evaluate_baselines
 from peakwindow.features import FEATURE_COLUMNS
+from peakwindow.figures import build_figures
 from peakwindow.prepare import PreparationError, load_processed, prepare_opsd
-from peakwindow.report import build_report
+from peakwindow.report import FIGURES_DIR, build_report
 from peakwindow.splits import SPLIT_VERSION, Period
 from peakwindow.study import RIDGE, final_evaluation, interval_evaluation, select_model
 from peakwindow.validation import validate_hourly_frame
@@ -223,7 +229,11 @@ def _build_parser() -> argparse.ArgumentParser:
     report_parser = commands.add_parser(
         "report",
         help="write a Markdown report from the experiment records",
-        description="Render <output-dir>/REPORT.md from the JSON experiment records.",
+        description=(
+            "Render <output-dir>/REPORT.md and its SVG figures (<output-dir>/figures/) from "
+            "the JSON experiment records. The example-week figure also needs the "
+            "export-dashboard table."
+        ),
     )
     report_parser.add_argument(
         "--output-dir", type=Path, default=Path("experiments"), help=experiments_help
@@ -508,14 +518,25 @@ def _report(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE_OR_IO_ERROR
-    output_path: Path = args.output_dir / "REPORT.md"
+    forecasts_path: Path = args.output_dir / FORECASTS_FILE
     try:
-        output_path.write_text(build_report(records), encoding="utf-8")
+        forecasts = pd.read_parquet(forecasts_path) if forecasts_path.is_file() else None
+    except (OSError, ValueError) as exc:
+        print(f"peakwindow: error: cannot read {forecasts_path}: {exc}", file=sys.stderr)
+        return EXIT_USAGE_OR_IO_ERROR
+    figures = build_figures(records, forecasts)
+    output_path: Path = args.output_dir / "REPORT.md"
+    figures_dir: Path = args.output_dir / FIGURES_DIR
+    try:
+        figures_dir.mkdir(parents=True, exist_ok=True)
+        for name, svg in figures.items():
+            (figures_dir / name).write_text(svg, encoding="utf-8", newline="\n")
+        output_path.write_text(build_report(records, figures), encoding="utf-8")
     except OSError as exc:
-        print(f"peakwindow: error: cannot write {output_path}: {exc}", file=sys.stderr)
+        print(f"peakwindow: error: cannot write the report: {exc}", file=sys.stderr)
         return EXIT_USAGE_OR_IO_ERROR
     print(
-        f"report: {len(records)} record(s) rendered to {output_path}",
+        f"report: {len(records)} record(s) and {len(figures)} figure(s) rendered to {output_path}",
         file=sys.stderr,
     )
     return EXIT_OK
