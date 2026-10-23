@@ -30,7 +30,7 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Install from the frozen lockfile
-        run: uv sync --frozen --group dev
+        run: uv sync --frozen --group dev --group dashboard
 
       - name: Ruff lint
         run: uv run --frozen ruff check .

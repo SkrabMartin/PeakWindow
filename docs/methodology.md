@@ -364,8 +364,8 @@ to the one in the final point evaluation (`model_matches_final_holdout_model: tr
 
 | Nominal | Empirical coverage | Mean width | Weekday | Weekend | Holiday | Below lower | Above upper |
 |---|---|---|---|---|---|---|---|
-| 80 % | **72.6 %** | 351 MW | 70.3 % | 78.3 % | 41.9 % | 7.3 % | 20.2 % |
-| 90 % | **90.2 %** | 556 MW | 90.0 % | 90.9 % | 62.3 % | 2.5 % | 7.3 % |
+| 80 % | **72.6 %** | 351 MW | 70.3 % | 78.3 % | 41.9 % | 7.25 % | 20.16 % |
+| 90 % | **90.2 %** | 556 MW | 90.0 % | 90.9 % | 62.3 % | 2.50 % | 7.26 % |
 
 | Sensitivity view | 80 % coverage | 90 % coverage |
 |---|---|---|
@@ -378,7 +378,7 @@ Reading the result honestly:
   72.6 %, 7.4 points short.** No widening factor or re-calibration was applied
   afterwards, as the protocol requires.
 - **The misses are one-sided.** At the 80 % level the actual load ends above the
-  interval 20.2 % of the time and below it only 7.3 % of the time. Ridge
+  interval 20.16 % of the time and below it only 7.25 % of the time. Ridge
   under-predicts in 2020 by 54.7 MW on average, against 17.8 MW on the calibration
   period, and by about 60–100 MW from May to September 2020. Symmetric intervals
   calibrated on 2019 H2 cannot absorb that shift. This is the non-exchangeability
@@ -390,6 +390,38 @@ Reading the result honestly:
   the window, 80 % coverage is still 74.0 %.
 - By horizon, 80 % coverage ranges from 60 % to 90 %. It is lowest in the morning and
   midday hours and highest at h = 0–1.
+
+**Provenance note on recorded versions.** The `peakwindow_version` field in each
+record comes from the installed package metadata, which was refreshed only on the
+next `uv sync`. It therefore lags the source code by one version for some records.
+The code that produced each record is identified by the commit that followed the run,
+with no source changes in between:
+
+| Record | Recorded version | Code committed in |
+|---|---|---|
+| `baselines_train.json`, `baselines_validation.json` | 0.3.0 | `2fafb2b` |
+| `model_selection.json` | 0.3.0 | `ec20425` (0.4.0) |
+| `final_holdout.json` | 0.4.0 | `ec20425` (0.4.0) |
+| `backtest.json` | 0.4.0 | `444a817` (0.5.0) |
+| `intervals_holdout.json` | 0.5.0 | `444a817` (0.5.0) |
+
+The records were not regenerated to fix the field, because re-running the holdout
+evaluations would be a second look at the holdout.
+
+## Observation from the dashboard (Phase 5)
+
+The daily-error timeline exposed the single worst Ridge day across all out-of-sample
+forecasts. On **2016-04-28** (backtest 2016) Ridge's daily MAE is about 1,900 MW,
+while the weekly naive's is 460 MW. Its input `last_load_mw` is the value at
+2016-04-27 23:00Z: the isolated 8,706 MW spike from the Phase 1 audit, between values
+near 6,900 MW. Ridge carries that jump into every hour of the day. The baselines do
+not read that hour, so they were unaffected.
+
+This is the cost of the "scored as published" spike policy, combined with a model
+that trusts the latest hour. The model and the evaluation are frozen and are not
+changed after the fact. A future version should test a robust latest-value input,
+for example the median of the last three hours, or an input sanity check, on a new
+pre-registered evaluation period.
 
 Directions for future work, not tested here: conditional calibration (for example
 separate holiday and ordinary-day widths), asymmetric intervals from signed residual

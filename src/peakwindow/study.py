@@ -189,13 +189,12 @@ class IntervalResult:
         }
 
 
-def interval_evaluation(
-    series: pd.DataFrame, spec: str, alpha: float, levels: tuple[float, ...] = LEVELS
-) -> IntervalResult:
-    """Calibrate intervals on the calibration period and measure coverage on the holdout."""
+def _calibrated_final_model(
+    series: pd.DataFrame, spec: str, alpha: float, levels: tuple[float, ...]
+) -> tuple[RidgeForecaster, ConformalIntervals, pd.DataFrame]:
+    """The train + validation Ridge, its intervals, and the calibration rows used."""
     fit_data = build_dataset(series, (Period.TRAIN, Period.VALIDATION))
     ridge = _fit(fit_data.frame, spec, alpha)
-
     calibration = build_dataset(series, (Period.CALIBRATION,)).frame
     intervals = ConformalIntervals.calibrate(
         calibration["horizon_h"].to_numpy(),
@@ -203,6 +202,34 @@ def interval_evaluation(
         ridge.predict(calibration),
         levels,
     )
+    return ridge, intervals, calibration
+
+
+def holdout_predictions(
+    series: pd.DataFrame, spec: str, alpha: float, levels: tuple[float, ...] = LEVELS
+) -> pd.DataFrame:
+    """Holdout rows with every model's prediction and the Ridge interval bounds.
+
+    Uses exactly the final model and intervals that were evaluated; only for display.
+    """
+    ridge, intervals, _ = _calibrated_final_model(series, spec, alpha, levels)
+    frame = build_dataset(series, (Period.HOLDOUT,), allow_holdout=True).frame
+    frame = frame.assign(source=Period.HOLDOUT.value)
+    for name, model in {**baseline_models(), RIDGE: ridge}.items():
+        frame[name] = model.predict(frame)
+    horizons = frame["horizon_h"].to_numpy()
+    for level in levels:
+        lower, upper = intervals.bounds(horizons, frame[RIDGE].to_numpy(), level)
+        frame[f"{RIDGE}_lower_{round(level * 100)}"] = lower
+        frame[f"{RIDGE}_upper_{round(level * 100)}"] = upper
+    return frame
+
+
+def interval_evaluation(
+    series: pd.DataFrame, spec: str, alpha: float, levels: tuple[float, ...] = LEVELS
+) -> IntervalResult:
+    """Calibrate intervals on the calibration period and measure coverage on the holdout."""
+    ridge, intervals, calibration = _calibrated_final_model(series, spec, alpha, levels)
 
     holdout = build_dataset(series, (Period.HOLDOUT,), allow_holdout=True).frame
     first, last = (pd.Timestamp(day, tz="UTC") for day in SENSITIVITY_WINDOW)

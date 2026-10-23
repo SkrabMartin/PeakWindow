@@ -19,7 +19,11 @@ cli.py
  │                              └─► baselines.py
  ├─ select-model / evaluate-holdout ─► study.py ─► evaluation.py, models.py (Ridge)
  ├─ backtest ─────────► backtest.py ─► evaluation.py, models.py
- └─ evaluate-intervals ─► study.py ─► uncertainty.py (split conformal)
+ ├─ evaluate-intervals ─► study.py ─► uncertainty.py (split conformal)
+ ├─ export-dashboard ─► dashboard_data.py ─► backtest.py, study.py (predictions only)
+ └─ report ───────────► report.py (reads the JSON records only)
+
+dashboard/app.py (Streamlit) ─► dashboard_data.py ─► precomputed Parquet + JSON records
 
 tests/ ── call every module directly; test_cli.py and test_prepare.py also drive main().
           No test uses the network: downloads are tested with file:// URLs.
@@ -59,6 +63,15 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
   over 2016–2019. It never builds holdout origins.
 - **`uncertainty.py`**: `conformal_quantile()`, `ConformalIntervals` (per-horizon
   half-widths) and `coverage_metrics()`. All of it is pure.
+- **`dashboard_data.py`**: `build_forecast_table()` gathers the backtest and holdout
+  predictions, with interval bounds, into one table. It also holds the pure
+  summaries the dashboard displays. A test checks that the table reproduces the
+  evaluated holdout MAE, interval coverage and backtest MAE exactly.
+- **`report.py`**: `build_report()` renders Markdown from the records and computes
+  nothing new.
+- **`dashboard/app.py`**: a thin Streamlit layer with Altair charts. It reads
+  precomputed files only, never fits a model, and labels every page as a historical
+  reconstruction. Streamlit is an optional dependency group (`dashboard`).
 - **`evaluation.py`**: `build_dataset()` and `evaluate()`. They score every model on
   the same origins, record data-gap exceptions, compute metrics and enforce the
   holdout lock. Each origin's features are built from a window that ends at the origin.
@@ -80,9 +93,11 @@ tests/ ── call every module directly; test_cli.py and test_prepare.py also d
 4. Downloads and derived files are verified by SHA-256 and recorded in manifests,
    and they live in git-ignored directories.
 5. Runtime dependencies are pandas, NumPy, scikit-learn (Ridge), pyarrow (Parquet)
-   and tzdata (time zones on Windows).
+   and tzdata (time zones on Windows). Streamlit and Altair are installed only with
+   the `dashboard` group.
 
-## Planned growth (not implemented)
+## Not implemented
 
-Later phases will add reporting and a dashboard. They will reuse `features.py`, `splits.py` and `evaluation.py` rather than
+Docker, a hosted read-only deployment, a forecast API and the optional
+hypothetical-threshold simulation from the brief are not implemented. They will reuse `features.py`, `splits.py` and `evaluation.py` rather than
 redefine them. See [roadmap.md](roadmap.md).

@@ -4,8 +4,8 @@ Exit status:
 
 * 0 -- success (``validate-data``: every quality check passed;
   ``prepare-opsd``: processed series written; ``evaluate-baselines``,
-  ``select-model``, ``evaluate-holdout``, ``backtest``, ``evaluate-intervals``:
-  record written)
+  ``select-model``, ``evaluate-holdout``, ``backtest``, ``evaluate-intervals``,
+  ``export-dashboard``, ``report``: output written)
 * 1 -- the data was read but failed (``validate-data``: a quality check;
   ``prepare-opsd``: the series could not be processed or UTC/local alignment failed)
 * 2 -- usage error, network/download failure, checksum mismatch, a locked holdout,
@@ -29,9 +29,11 @@ from peakwindow import __version__, baselines, opsd
 from peakwindow.acquisition import AcquisitionError, ProgressCallback, fetch, sha256_of
 from peakwindow.backtest import rolling_backtest
 from peakwindow.csv_adapter import CsvReadError, read_canonical_csv
+from peakwindow.dashboard_data import RECORDS, build_forecast_table, write_forecasts
 from peakwindow.evaluation import HoldoutLockedError, ModelMetrics, evaluate_baselines
 from peakwindow.features import FEATURE_COLUMNS
 from peakwindow.prepare import PreparationError, load_processed, prepare_opsd
+from peakwindow.report import build_report
 from peakwindow.splits import SPLIT_VERSION, Period
 from peakwindow.study import RIDGE, final_evaluation, interval_evaluation, select_model
 from peakwindow.validation import validate_hourly_frame
@@ -48,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "PeakWindow: historical Czech electricity-demand forecasting laboratory. "
             "Provides OPSD data acquisition, offline preparation, data-quality audits, "
             "seasonal naive baselines, Ridge model selection, the final holdout evaluation, "
-            "rolling backtests and conformal prediction intervals."
+            "rolling backtests, conformal prediction intervals, dashboard data and a report."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -202,6 +204,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="confirm that the interval method is fixed and the holdout may be opened",
     )
     intervals_parser.set_defaults(handler=_evaluate_intervals)
+
+    export_parser = commands.add_parser(
+        "export-dashboard",
+        help="precompute out-of-sample forecasts (backtest + holdout) for the dashboard",
+        description=(
+            "Write <output-dir>/dashboard/forecasts.parquet with the backtest predictions "
+            "(2016-2019) and the final model's holdout predictions and interval bounds. "
+            "No evaluation is repeated or changed; this only prepares data for display."
+        ),
+    )
+    export_parser.add_argument("--data-dir", type=Path, default=Path("data"), help=data_dir_help)
+    export_parser.add_argument(
+        "--output-dir", type=Path, default=Path("experiments"), help=experiments_help
+    )
+    export_parser.set_defaults(handler=_export_dashboard)
+
+    report_parser = commands.add_parser(
+        "report",
+        help="write a Markdown report from the experiment records",
+        description="Render <output-dir>/REPORT.md from the JSON experiment records.",
+    )
+    report_parser.add_argument(
+        "--output-dir", type=Path, default=Path("experiments"), help=experiments_help
+    )
+    report_parser.set_defaults(handler=_report)
     return parser
 
 
@@ -442,6 +469,55 @@ def _evaluate_intervals(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     print(f"interval record written to {output_path}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _export_dashboard(args: argparse.Namespace) -> int:
+    loaded = _load_selection(args)
+    if loaded is None:
+        return EXIT_USAGE_OR_IO_ERROR
+    series, _, selection = loaded
+    chosen = selection["selection"]["chosen"]
+    table = build_forecast_table(series, chosen["spec"], float(chosen["alpha"]))
+    try:
+        path = write_forecasts(table, args.output_dir)
+    except OSError as exc:
+        print(f"peakwindow: error: cannot write dashboard data: {exc}", file=sys.stderr)
+        return EXIT_USAGE_OR_IO_ERROR
+    sources = ", ".join(sorted(table["source"].unique()))
+    print(
+        f"export-dashboard: {table['origin_utc'].nunique()} origins ({sources}) written to {path}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
+def _report(args: argparse.Namespace) -> int:
+    records: dict[str, dict[str, Any]] = {}
+    for name in RECORDS:
+        path: Path = args.output_dir / f"{name}.json"
+        if path.is_file():
+            try:
+                records[name] = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"peakwindow: error: cannot read {path}: {exc}", file=sys.stderr)
+                return EXIT_USAGE_OR_IO_ERROR
+    if not records:
+        print(
+            f"peakwindow: error: no experiment records in {args.output_dir}",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_OR_IO_ERROR
+    output_path: Path = args.output_dir / "REPORT.md"
+    try:
+        output_path.write_text(build_report(records), encoding="utf-8")
+    except OSError as exc:
+        print(f"peakwindow: error: cannot write {output_path}: {exc}", file=sys.stderr)
+        return EXIT_USAGE_OR_IO_ERROR
+    print(
+        f"report: {len(records)} record(s) rendered to {output_path}",
+        file=sys.stderr,
+    )
     return EXIT_OK
 
 

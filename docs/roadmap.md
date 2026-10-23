@@ -1,7 +1,17 @@
 # Roadmap
 
-The project's minimum acceptance criteria (see [project_brief.md](project_brief.md))
-also require a dashboard and a reproducible report, so they are not met yet.
+All five phases are complete. Measured against the brief's minimum acceptance criteria
+(see [project_brief.md](project_brief.md)):
+
+| Criterion | Status |
+|---|---|
+| 1. Download once, cache, process offline; tests use a tiny fixture | Met |
+| 2. 24 aligned outputs per origin, or a documented data-gap exception | Met |
+| 3. Two seasonal naive baselines and one learned model compared fairly | Met |
+| 4. A leakage test shows that changing data after the origin leaves features unchanged | Met |
+| 5. Errors from a true chronological holdout; no unmeasured claims | Met |
+| 6. The dashboard shows study-period dates and says it is not real time | Met |
+| 7. A reproducible report with configuration, seed, split boundaries, MAE, RMSE and plots | Partly: the report has tables, and the plots are in the dashboard |
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -10,4 +20,7 @@ also require a dashboard and a reproducible report, so they are not met yet.
 | 2. Leakage-safe features and baselines | Frozen split `split-v1` with a locked holdout; spike policy (scored as published); calendar and lag features from pre-origin data; future-mutation leakage tests; daily and weekly seasonal naive baselines; per-origin data-gap exceptions; experiment records | **Done** |
 | 3. Learned models and chronological evaluation | Czech public-holiday feature; per-horizon Ridge selected on validation; pre-registered protocol; a single, final holdout evaluation (Ridge MAE 133.7 MW vs 288.3 MW for the weekly naive) | **Done** |
 | 4. Calibrated uncertainty and backtests | Per-horizon split-conformal intervals from the 2019 H2 calibration window; pre-registered holdout coverage (90 % met, 80 % at 72.6 %); rolling-origin backtest 2016–2019 | **Done** |
-| 5. Historical dashboard and optional packaging | Streamlit view of precomputed results, with prominent study-period and "historical reconstruction" labels; error-slice pages; optional hypothetical-threshold simulation; optional Docker and read-only deployment | Next |
+| 5. Historical dashboard and report | Streamlit view of precomputed forecasts with "historical reconstruction" labels, error slices and worst days; Markdown report from the records. Not done: threshold simulation, Docker, deployment | **Done** |
+
+Possible next steps, each needing a new pre-registered evaluation period: robust
+latest-value inputs, holiday-aware or asymmetric intervals, and gradient boosting.

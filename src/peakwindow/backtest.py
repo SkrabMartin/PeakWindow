@@ -13,6 +13,7 @@ and six alphas, this choice carries little freedom.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,7 @@ import pandas as pd
 
 from peakwindow.evaluation import (
     ACTUAL,
+    Dataset,
     Model,
     ModelMetrics,
     baseline_models,
@@ -73,20 +75,30 @@ def _format_day(origin: pd.Timestamp) -> str:
     return origin.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def rolling_backtest(
-    series: pd.DataFrame, spec: str, alpha: float, years: tuple[int, ...] = BACKTEST_YEARS
-) -> BacktestResult:
-    dataset = build_dataset(series, (Period.TRAIN, Period.VALIDATION, Period.CALIBRATION))
-    frame = dataset.frame
+def _folds(
+    frame: pd.DataFrame, spec: str, alpha: float, years: tuple[int, ...]
+) -> Iterator[tuple[int, pd.DataFrame, pd.DataFrame, dict[str, Model]]]:
+    """Yield ``(year, fit rows, test rows, fitted models)`` for every test year."""
     origin_year = frame["origin_utc"].dt.year
-    folds = []
     for year in years:
         fit = frame.loc[origin_year < year]
         test = frame.loc[origin_year == year]
         if fit.empty or test.empty:
             raise ValueError(f"backtest year {year} has no fit or test origins")
         ridge = RidgeForecaster(alpha=alpha, spec=spec).fit(fit, fit[ACTUAL])
-        models: dict[str, Model] = {**baseline_models(), RIDGE: ridge}
+        yield year, fit, test, {**baseline_models(), RIDGE: ridge}
+
+
+def _backtest_dataset(series: pd.DataFrame) -> Dataset:
+    return build_dataset(series, (Period.TRAIN, Period.VALIDATION, Period.CALIBRATION))
+
+
+def rolling_backtest(
+    series: pd.DataFrame, spec: str, alpha: float, years: tuple[int, ...] = BACKTEST_YEARS
+) -> BacktestResult:
+    dataset = _backtest_dataset(series)
+    folds = []
+    for year, fit, test, models in _folds(dataset.frame, spec, alpha, years):
         folds.append(
             Fold(
                 test_year=year,
@@ -98,3 +110,16 @@ def rolling_backtest(
             )
         )
     return BacktestResult(spec, alpha, tuple(folds), len(dataset.exceptions))
+
+
+def backtest_predictions(
+    series: pd.DataFrame, spec: str, alpha: float, years: tuple[int, ...] = BACKTEST_YEARS
+) -> pd.DataFrame:
+    """Out-of-sample predictions of every fold: test rows plus one column per model."""
+    parts = []
+    for year, _, test, models in _folds(_backtest_dataset(series).frame, spec, alpha, years):
+        part = test.assign(source=f"backtest_{year}")
+        for name, model in models.items():
+            part[name] = model.predict(test)
+        parts.append(part)
+    return pd.concat(parts, ignore_index=True)

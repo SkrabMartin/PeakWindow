@@ -13,6 +13,7 @@ from peakwindow import cli
 from peakwindow.backtest import BACKTEST_YEARS, BacktestResult, rolling_backtest
 from peakwindow.cli import EXIT_OK, EXIT_USAGE_OR_IO_ERROR, main
 from peakwindow.contracts import LOAD_COLUMN, TIMESTAMP_COLUMN, ForecastRequest
+from peakwindow.dashboard_data import FORECASTS_FILE, build_forecast_table, interval_coverage
 from peakwindow.features import MAX_LOOKBACK, build_features
 from peakwindow.study import (
     ALPHAS,
@@ -63,6 +64,11 @@ def backtest(series: pd.DataFrame, selection: SelectionResult) -> BacktestResult
 @pytest.fixture(scope="module")
 def intervals(series: pd.DataFrame, selection: SelectionResult) -> IntervalResult:
     return interval_evaluation(series, selection.chosen.spec, selection.chosen.alpha)
+
+
+@pytest.fixture(scope="module")
+def forecast_table(series: pd.DataFrame, selection: SelectionResult) -> pd.DataFrame:
+    return build_forecast_table(series, selection.chosen.spec, selection.chosen.alpha)
 
 
 def test_selection_fits_every_candidate_and_picks_lowest_validation_mae(
@@ -262,3 +268,57 @@ def test_cli_backtest_and_intervals(
         json.dumps(intervals.model_export), encoding="utf-8"
     )
     assert main(["evaluate-intervals", *common, "--confirm"]) == EXIT_OK
+
+    assert main(["report", "--output-dir", str(experiments)]) == EXIT_OK
+    report = (experiments / "REPORT.md").read_text(encoding="utf-8")
+    assert "## Rolling backtest" in report
+    assert f"| 2016 | {backtest.folds[0].fit_origins} |" in report
+    assert "Model selection record not found" not in report
+    assert main(["report", "--output-dir", str(tmp_path / "empty")]) == EXIT_USAGE_OR_IO_ERROR
+
+
+# --- Phase 5: dashboard data ------------------------------------------------
+
+
+def test_forecast_table_reproduces_the_evaluated_results(
+    forecast_table: pd.DataFrame,
+    final: FinalResult,
+    intervals: IntervalResult,
+    backtest: BacktestResult,
+) -> None:
+    table = forecast_table
+    assert set(table["source"]) == {f"backtest_{y}" for y in BACKTEST_YEARS} | {"holdout"}
+    holdout = table.loc[table["source"] == "holdout"]
+    ridge_mae = (holdout["ridge"] - holdout["actual"]).abs().mean()
+    assert round(float(ridge_mae), 3) == final.holdout.models["ridge"].mae
+    coverage = interval_coverage(table).set_index("nominal")["coverage"]
+    assert round(float(coverage["80 %"]), 4) == intervals.holdout[0.8].coverage
+    assert round(float(coverage["90 %"]), 4) == intervals.holdout[0.9].coverage
+    for fold in backtest.folds:
+        rows = table.loc[table["source"] == f"backtest_{fold.test_year}"]
+        mae = (rows["ridge"] - rows["actual"]).abs().mean()
+        assert round(float(mae), 3) == fold.models["ridge"].mae
+        assert rows["ridge_lower_80"].isna().all()
+
+
+def test_cli_export_dashboard(
+    series: pd.DataFrame,
+    selection: SelectionResult,
+    forecast_table: pd.DataFrame,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "select_model", lambda _: selection)
+    monkeypatch.setattr(cli, "build_forecast_table", lambda *_: forecast_table)
+    data = tmp_path / "data"
+    write_processed(series, data / "processed")
+    common = ["--data-dir", str(data), "--output-dir", str(tmp_path / "exp")]
+
+    assert main(["export-dashboard", *common]) == EXIT_USAGE_OR_IO_ERROR  # no selection yet
+    assert main(["select-model", *common]) == EXIT_OK
+    assert main(["export-dashboard", *common]) == EXIT_OK
+
+    assert "holdout" in capsys.readouterr().err
+    written = pd.read_parquet(tmp_path / "exp" / FORECASTS_FILE)
+    pd.testing.assert_frame_equal(written, forecast_table)

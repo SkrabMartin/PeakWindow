@@ -7,10 +7,10 @@ demand**, with meaningful baselines, strictly chronological evaluation, calibrat
 uncertainty and an interactive historical dashboard. It runs locally on a CPU with
 no paid services.
 
-> **Status: work in progress. Phase 4 (backtests and prediction intervals) is done.**
-> The point forecasts and 80 % / 90 % conformal intervals have each been evaluated
-> once on the 2020 holdout, following protocols committed before the holdout was
-> opened. They are also backtested over 2016–2019. The dashboard is still to come.
+> **Status: Phase 5 (historical dashboard and report) is done.** The point forecasts
+> and 80 % / 90 % conformal intervals have each been evaluated once on the 2020
+> holdout, following protocols committed before the holdout was opened. They are also
+> backtested over 2016–2019 and can be explored in a local Streamlit dashboard.
 > PeakWindow is a historical research laboratory, not a live forecasting feed and
 > not a grid-control system.
 
@@ -29,6 +29,8 @@ no paid services.
 | `evaluate-holdout --confirm`: one final evaluation following a pre-registered protocol | |
 | `backtest`: rolling-origin backtest 2016–2019 with yearly refits | |
 | `evaluate-intervals --confirm`: per-horizon split-conformal 80 % / 90 % intervals | |
+| `export-dashboard` + Streamlit dashboard of precomputed historical forecasts | |
+| `report`: Markdown report built from the experiment records | |
 | Synthetic fixtures, an offline test suite, Ruff, strict mypy, GitHub Actions | |
 
 ## Setup
@@ -123,6 +125,32 @@ uv run --frozen peakwindow evaluate-intervals --confirm
 Both commands use the configuration in `model_selection.json`. `evaluate-intervals`
 also checks that its refitted model is identical to `ridge_final_model.json`.
 
+### Dashboard and report
+
+```bash
+# Precompute out-of-sample forecasts (backtest 2016-2019 + holdout 2020 with intervals)
+uv run --frozen peakwindow export-dashboard
+
+# Markdown report from the experiment records -> experiments/REPORT.md
+uv run --frozen peakwindow report
+
+# Local dashboard (installs the optional dashboard group: Streamlit, Altair)
+uv run --frozen --group dashboard streamlit run dashboard/app.py
+```
+
+The dashboard only reads `experiments/dashboard/forecasts.parquet` and the JSON
+records. It never trains a model. Its tabs:
+
+- **Forecast day**: actual load, Ridge, both baselines and the 80 % / 90 % band for a
+  chosen historical date, in Prague time, with daylight-saving changes and data-gap
+  days called out.
+- **Performance**: holdout metrics, interval coverage, MAE by period and by horizon.
+- **Failures**: MAE by day type, the daily error timeline with holidays marked, and
+  the worst days.
+- **About**: the method and its limitations.
+
+Every page carries a "historical reconstruction, not a live forecast" banner.
+
 | Exit status | Meaning |
 |---|---|
 | `0` | Success (`validate-data`: every check passed; `prepare-opsd`: series written; `evaluate-baselines`: record written) |
@@ -148,6 +176,8 @@ PeakWindow/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
+├── dashboard/
+│   └── app.py
 ├── data/
 │   ├── README.md
 │   └── fixtures/
@@ -170,6 +200,7 @@ PeakWindow/
 │       ├── cli.py
 │       ├── contracts.py
 │       ├── csv_adapter.py
+│       ├── dashboard_data.py
 │       ├── evaluation.py
 │       ├── features.py
 │       ├── holidays.py
@@ -177,6 +208,7 @@ PeakWindow/
 │       ├── opsd.py
 │       ├── prepare.py
 │       ├── py.typed
+│       ├── report.py
 │       ├── splits.py
 │       ├── study.py
 │       ├── uncertainty.py
@@ -187,6 +219,7 @@ PeakWindow/
 │   ├── test_audit.py
 │   ├── test_cli.py
 │   ├── test_contracts.py
+│   ├── test_dashboard.py
 │   ├── test_evaluation.py
 │   ├── test_features.py
 │   ├── test_holidays.py
@@ -227,6 +260,10 @@ PeakWindow/
   evaluation and the interval evaluation.
 - `src/peakwindow/backtest.py` runs the rolling-origin backtest.
 - `src/peakwindow/uncertainty.py` holds the split-conformal intervals and coverage metrics.
+- `src/peakwindow/dashboard_data.py` builds the precomputed forecast table and the
+  summaries the dashboard shows. It has no Streamlit dependency.
+- `src/peakwindow/report.py` renders `REPORT.md` from the experiment records.
+- `dashboard/app.py` is the Streamlit user interface, kept thin over `dashboard_data.py`.
 - `src/peakwindow/cli.py` and `__main__.py` provide the command-line front end:
   presentation, output files and exit codes.
 - `tests/` contains boundary, quality, audit, acquisition, leakage, model, study and
@@ -334,7 +371,8 @@ expected. Details, ablations and the pre-registered final protocol are in
 2. ~~Leakage-safe features and daily and weekly seasonal naive baselines.~~ Done.
 3. ~~Ridge and chronological evaluation with a single, pre-registered holdout run.~~ Done.
 4. ~~Calibrated prediction intervals and rolling-origin backtests.~~ Done.
-5. Historical dashboard and optional packaging.
+5. ~~Historical dashboard and reproducible report.~~ Done. Docker and a read-only
+   deployment stay optional and unimplemented.
 
 See [docs/roadmap.md](docs/roadmap.md) and [docs/architecture.md](docs/architecture.md).
 The original design brief is
@@ -352,6 +390,10 @@ not current features.
   2016–2019 backtest reused a configuration chosen on 2019 H1.
 - The 80 % interval undercovers on the holdout (72.6 %), and intervals are much too
   narrow on public holidays. Intervals are symmetric and not conditioned on day type.
+- Ridge leans heavily on the last observed hour. One bad input value shifts the whole
+  day: the worst backtest day (2016-04-28, MAE about 1,900 MW) follows an isolated
+  spike in the source data.
+- The report contains tables only. The charts are in the dashboard.
 - No live feed. This is a historical reconstruction laboratory, and its output must
   never be read as operational guidance.
 - Publication delays of source measurements have not been audited.
@@ -362,5 +404,7 @@ not current features.
 Original code and documentation: [MIT](LICENSE) © Martin Škrabana, original
 project author. Third-party datasets are not relicensed.
 
-Before opening a pull request, run the four verification commands above. Do not
+Before opening a pull request, run the four verification commands above. Install the
+dashboard group first (`uv sync --frozen --group dev --group dashboard`) so the
+dashboard tests run too. Do not
 commit downloaded data, generated artifacts or credentials.
